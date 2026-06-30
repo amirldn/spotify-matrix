@@ -9,6 +9,7 @@ This uses Spotify's Web API `currently-playing` endpoint, not the browser-only W
 - `spotify_matrix.py` - Pi runtime script.
 - `.env` - local Spotify credentials, ignored by Git.
 - `.env.example` - template for recreating local config.
+- `assets/static-album.png` - static album image used by the test branch.
 - `requirements.txt` - Python dependencies, excluding the hardware-specific RGB matrix bindings.
 
 ## Raspberry Pi setup
@@ -43,7 +44,14 @@ Then run the script on the Pi and open the printed authorization URL in your loc
 
 ## Run
 
-This is the working command to run the script on your raspberry pi:
+This is the working command to run the sample image on your raspberry pi. On this test branch, it displays `assets/static-album.png` as a static album disk and does not require Spotify environment values:
+
+```bash
+cd /home/tru/spotify-matrix
+./run_sample_image.sh
+```
+
+That wrapper runs:
 
 ```bash
 sudo -E .venv/bin/python spotify_matrix.py \
@@ -53,8 +61,11 @@ sudo -E .venv/bin/python spotify_matrix.py \
   --parallel 1 \
   --gpio-slowdown 4 \
   --no-hardware-pulse \
-  --hardware-mapping adafruit-hat
+  --hardware-mapping adafruit-hat \
+  --static-image /home/tru/spotify-matrix/assets/static-album.png
 ```
+
+To poll live Spotify playback instead of showing the static image, add `--live-spotify`.
 
 Useful hardware options:
 

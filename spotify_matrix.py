@@ -32,6 +32,7 @@ AUTH_URL = "https://accounts.spotify.com/authorize"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
 CURRENTLY_PLAYING_URL = "https://api.spotify.com/v1/me/player/currently-playing"
 SCOPE = "user-read-currently-playing"
+DEFAULT_STATIC_IMAGE = Path(__file__).resolve().parent / "assets" / "static-album.png"
 
 
 @dataclass
@@ -516,11 +517,7 @@ def poll_spotify(
         stop_event.wait(poll_seconds)
 
 
-def run(args: argparse.Namespace) -> None:
-    if args.preview_frames:
-        render_preview_frames(args.preview_frames)
-        return
-
+def create_spotify_client(args: argparse.Namespace) -> SpotifyClient:
     load_dotenv()
 
     client_id = os.environ.get("SPOTIFY_CLIENT_ID")
@@ -539,7 +536,7 @@ def run(args: argparse.Namespace) -> None:
     if missing:
         raise SystemExit(f"Missing required environment values: {', '.join(missing)}")
 
-    spotify = SpotifyClient(
+    return SpotifyClient(
         client_id=client_id or "",
         client_secret=client_secret or "",
         redirect_uri=redirect_uri,
@@ -547,10 +544,23 @@ def run(args: argparse.Namespace) -> None:
         open_browser=not args.no_browser,
     )
 
+
+def run(args: argparse.Namespace) -> None:
+    if args.preview_frames:
+        render_preview_frames(args.preview_frames)
+        return
+
     if args.auth_only:
+        spotify = create_spotify_client(args)
         spotify.authorize()
         print(f"Spotify token cached at {args.token_cache}")
         return
+
+    static_art: Image.Image | None = None
+    if args.static_image and not args.live_spotify:
+        if not args.static_image.exists():
+            raise SystemExit(f"Static image not found: {args.static_image}")
+        static_art = Image.open(args.static_image).convert("RGB")
 
     display: MatrixDisplay | MockDisplay
     if args.mock_output:
@@ -573,6 +583,21 @@ def run(args: argparse.Namespace) -> None:
             display.clear()
         return
 
+    if static_art is not None:
+        static_frame = render_record(static_art, 0.0, size)
+        try:
+            while True:
+                display.show(static_frame)
+                if args.once:
+                    break
+                time.sleep(1.0 / args.fps)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            display.clear()
+        return
+
+    spotify = create_spotify_client(args)
     idle = render_idle(size)
     playback_state = SharedPlaybackState()
     playback_lock = threading.Lock()
@@ -653,6 +678,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--token-cache", type=Path, default=Path(".cache/spotify_token.json"))
     parser.add_argument("--mock-output", type=Path, help="Write the current frame PNG instead of using RGB matrix hardware.")
     parser.add_argument("--preview-frames", type=Path, help="Render sample spinning-album-art disk frames and exit.")
+    parser.add_argument(
+        "--static-image",
+        type=Path,
+        default=DEFAULT_STATIC_IMAGE,
+        help="Render one local image as a static album disk instead of polling Spotify.",
+    )
+    parser.add_argument("--live-spotify", action="store_true", help="Poll Spotify instead of showing the static test image.")
     parser.add_argument("--auth-only", action="store_true", help="Authorize Spotify, cache the token, and exit without using the matrix.")
     parser.add_argument("--test-pattern", action="store_true", help="Show a bright moving color test pattern without using Spotify.")
     parser.add_argument("--once", action="store_true", help="Render one frame and exit.")
