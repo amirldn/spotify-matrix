@@ -401,7 +401,7 @@ def render_record(art: Image.Image | None, angle: float, size: int) -> Image.Ima
     if art is None:
         return frame.convert("RGB")
 
-    margin = max(2, size // 32)
+    margin = size // 40  # ~0 on a 32x32 so the disc reaches the panel edge
     disc_size = size - margin * 2
     # The album art is the record surface: rotate it first, then cut it into a circular disk.
     art_square = ImageOps.fit(art, (disc_size, disc_size), method=Image.Resampling.LANCZOS)
