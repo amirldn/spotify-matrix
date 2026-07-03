@@ -322,6 +322,10 @@ class MatrixDisplay:
         options.pwm_bits = args.pwm_bits
         options.limit_refresh_rate_hz = args.limit_refresh_rate_hz
         options.disable_hardware_pulsing = args.no_hardware_pulse
+        # By default the library drops root to user 'daemon' right after init.
+        # That breaks the poll thread's album-art HTTP download (it can no longer
+        # fetch/decode the image). We launch with sudo intentionally, so keep root.
+        options.drop_privileges = False
 
         self.matrix = RGBMatrix(options=options)
         self.canvas = self.matrix.CreateFrameCanvas()
@@ -413,8 +417,10 @@ def render_record(art: Image.Image | None, angle: float, size: int) -> Image.Ima
     draw.ellipse(outer, outline=(6, 6, 6, 255), width=max(1, size // 32))
 
     center = size // 2
-    label_radius = max(5, size // 11)
-    hole_radius = max(2, size // 25)
+    # Radii scale with the panel so the label stays proportional at any resolution
+    # (a fixed floor tuned for 64x64 would swallow a 32x32 disc).
+    label_radius = max(3, size // 7)
+    hole_radius = max(1, size // 16)
     draw.ellipse(
         (
             center - label_radius,
@@ -516,9 +522,32 @@ def poll_spotify(
         stop_event.wait(poll_seconds)
 
 
+def build_display(args: argparse.Namespace) -> MatrixDisplay | MockDisplay:
+    if args.mock_output:
+        return MockDisplay(args.mock_output)
+    return MatrixDisplay(args)
+
+
 def run(args: argparse.Namespace) -> None:
+    # Modes that never touch Spotify run first, so they never need credentials.
     if args.preview_frames:
-        render_preview_frames(args.preview_frames)
+        render_preview_frames(args.preview_frames, min(args.rows, args.cols))
+        return
+
+    size = min(args.rows, args.cols)
+
+    if args.test_pattern:
+        display = build_display(args)
+        try:
+            offset = 0
+            while True:
+                display.show(render_test_pattern(size, offset))
+                offset = (offset + 1) % size
+                time.sleep(1.0 / args.fps)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            display.clear()
         return
 
     load_dotenv()
@@ -552,27 +581,7 @@ def run(args: argparse.Namespace) -> None:
         print(f"Spotify token cached at {args.token_cache}")
         return
 
-    display: MatrixDisplay | MockDisplay
-    if args.mock_output:
-        display = MockDisplay(args.mock_output)
-    else:
-        display = MatrixDisplay(args)
-
-    size = min(args.rows, args.cols)
-
-    if args.test_pattern:
-        try:
-            offset = 0
-            while True:
-                display.show(render_test_pattern(size, offset))
-                offset = (offset + 1) % size
-                time.sleep(1.0 / args.fps)
-        except KeyboardInterrupt:
-            pass
-        finally:
-            display.clear()
-        return
-
+    display = build_display(args)
     idle = render_idle(size)
     playback_state = SharedPlaybackState()
     playback_lock = threading.Lock()
@@ -624,11 +633,12 @@ def positive_float(value: str) -> float:
     return parsed
 
 
-def render_preview_frames(directory: Path) -> None:
+def render_preview_frames(directory: Path, size: int) -> None:
     directory.mkdir(parents=True, exist_ok=True)
-    art = demo_album_art(96)
+    art = demo_album_art(max(size * 3, 96))
     for index, angle in enumerate((0, 45, 90, 135)):
-        render_record(art, angle, 64).save(directory / f"album-disk-{index:02d}.png")
+        render_record(art, angle, size).save(directory / f"album-disk-{index:02d}.png")
+    render_idle(size).save(directory / "idle.png")
 
 
 def build_parser() -> argparse.ArgumentParser:
