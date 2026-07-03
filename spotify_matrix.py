@@ -420,7 +420,7 @@ def render_record(art: Image.Image | None, angle: float, size: int) -> Image.Ima
     # Radii scale with the panel so the label stays proportional at any resolution
     # (a fixed floor tuned for 64x64 would swallow a 32x32 disc).
     label_radius = max(3, size // 7)
-    hole_radius = max(1, size // 24)
+    hole_radius = max(1, size // 24)  # ~3px on a 32x32 - smallest hole that still reads
     draw.ellipse(
         (
             center - label_radius,
