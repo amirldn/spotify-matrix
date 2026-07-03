@@ -76,6 +76,23 @@ sudo -E .venv/bin/python spotify_matrix.py \
 - Headless Pi: forward the callback port from a machine with a browser: `ssh -L 8888:127.0.0.1:8888 pi@raspberrypi.local`, run the script on the Pi, open the printed auth URL locally.
 - Credentials live in `.env` (gitignored); template in `.env.example`.
 
+## Auto-start on boot (systemd)
+Unit file: `spotify-matrix.service` (in the repo). Runs as root (needs GPIO + `drop_privileges=False`), waits for network, restarts on failure, and stops with SIGINT so the panel clears cleanly.
+
+Install once (symlinked so editing the repo copy edits the installed unit — no re-copy needed):
+```bash
+sudo ln -sf /home/nova/spotify-matrix/spotify-matrix.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now spotify-matrix.service
+```
+Verified: survives reboot and auto-starts.
+
+### Picking up changes
+- **Edited the Python (`spotify_matrix.py`) or `.env`:** `sudo systemctl restart spotify-matrix.service` (no daemon-reload).
+- **Edited the unit file:** `sudo systemctl daemon-reload && sudo systemctl restart spotify-matrix.service` (symlinked, so no re-copy).
+- **Debugging code:** stop the service and run in the foreground for live output — `sudo systemctl stop spotify-matrix.service` then the manual run command; `systemctl start` when done. (Two processes can't share the matrix GPIO.)
+- Logs: `journalctl -u spotify-matrix.service -f`
+
 ## Local fixes to the script (differ from the initial commit)
 
 - **`--test-pattern` and `--preview-frames` no longer require Spotify credentials.** The credential check in `run()` used to run *before* the test-pattern branch, so a hardware-only test still failed with "Missing required environment values". Fixed by moving the no-Spotify modes to the top of `run()` and extracting a `build_display(args)` helper. Now you can verify the panel before doing any Spotify setup.

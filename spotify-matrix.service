@@ -1,0 +1,27 @@
+[Unit]
+Description=Spotify Matrix - spinning album art on an RGB LED matrix
+# Wait for the network so the first Spotify poll has connectivity.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Must run as root: the matrix needs GPIO, and the app sets
+# drop_privileges=False so the poll thread can keep downloading album art.
+User=root
+WorkingDirectory=/home/nova/spotify-matrix
+# .env and .cache/spotify_token.json are resolved relative to WorkingDirectory,
+# so the OAuth token cached during --auth-only is picked up here.
+ExecStart=/home/nova/spotify-matrix/.venv/bin/python /home/nova/spotify-matrix/spotify_matrix.py \
+    --rows 32 --cols 32 \
+    --gpio-slowdown 5 \
+    --no-hardware-pulse \
+    --hardware-mapping adafruit-hat
+Restart=on-failure
+RestartSec=5
+# Stop with SIGINT so the script's KeyboardInterrupt path runs and clears the panel.
+KillSignal=SIGINT
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target
