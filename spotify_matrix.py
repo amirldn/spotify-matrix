@@ -5,6 +5,7 @@ import argparse
 import base64
 from io import BytesIO
 import json
+import math
 import os
 import secrets
 import threading
@@ -594,6 +595,8 @@ def run(args: argparse.Namespace) -> None:
     poll_thread.start()
 
     angle = 0.0
+    spin_velocity = 0.0  # degrees/sec, eased toward the target speed
+    full_speed = 360.0 * (args.rpm / 60.0)
     last_frame = time.monotonic()
 
     try:
@@ -607,8 +610,13 @@ def run(args: argparse.Namespace) -> None:
             delta = now - last_frame
             last_frame = now
 
-            if is_playing and current_art_image is not None:
-                angle = (angle - 360.0 * (args.rpm / 60.0) * delta) % 360.0
+            target_speed = full_speed if (is_playing and current_art_image is not None) else 0.0
+            # Ease the velocity toward the target so the record spins up on play
+            # and coasts to a halt on pause, like a real turntable.
+            spin_velocity += (target_speed - spin_velocity) * (1.0 - math.exp(-delta / args.spin_lag))
+            if target_speed == 0.0 and spin_velocity < 1.0:
+                spin_velocity = 0.0  # snap the final crawl to a clean stop
+            angle = (angle - spin_velocity * delta) % 360.0
 
             image = render_record(current_art_image, angle, size) if current_art_image else idle
             display.show(image)
@@ -660,6 +668,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--poll-seconds", type=positive_float, default=2.0)
     parser.add_argument("--fps", type=positive_float, default=20.0)
     parser.add_argument("--rpm", type=positive_float, default=20.0)
+    parser.add_argument("--spin-lag", type=positive_float, default=0.5, help="Seconds-scale easing for spin-up on play and coast-down on pause. Lower is snappier.")
     parser.add_argument("--token-cache", type=Path, default=Path(".cache/spotify_token.json"))
     parser.add_argument("--mock-output", type=Path, help="Write the current frame PNG instead of using RGB matrix hardware.")
     parser.add_argument("--preview-frames", type=Path, help="Render sample spinning-album-art disk frames and exit.")
