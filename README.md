@@ -1,78 +1,155 @@
 # Spotify Matrix
 
-Shows the current Spotify album art on a 64x64 RGB matrix as a circular record. The album art is the record surface itself: it is cropped to a disk, spun while Spotify reports playback as active, and left stopped at the current angle when paused.
+Shows the current Spotify album art on an RGB LED matrix as a spinning vinyl record. The album art *is* the record surface: it is cropped to a disk, spun while Spotify reports playback as active, and left stopped at the current angle when paused.
 
 This uses Spotify's Web API `currently-playing` endpoint, not the browser-only Web Playback SDK. The first run opens Spotify OAuth, then the script stores a refresh token in `.cache/spotify_token.json`.
 
+Confirmed working on a **Raspberry Pi Zero 2 W + Adafruit RGB Matrix Bonnet + 32x32 panel**. The panel size is configurable (`--rows`/`--cols`), so 64x64 works too.
+
 ## Files
 
-- `spotify_matrix.py` - Pi runtime script.
-- `.env` - local Spotify credentials, ignored by Git.
-- `.env.example` - template for recreating local config.
-- `requirements.txt` - Python dependencies, excluding the hardware-specific RGB matrix bindings.
+- `spotify_matrix.py` - the runtime script.
+- `setup.sh` - one-shot Pi provisioning (deps, venv, bindings). See below.
+- `spotify-matrix.service` - systemd unit for auto-start on boot.
+- `.env` / `.env.example` - local Spotify credentials (`.env` is gitignored).
+- `requirements.txt` - Python deps, excluding the hardware-specific RGB matrix bindings.
+- `CLAUDE.md` - detailed setup notes, hardware decisions, and gotchas. **Read this if anything goes wrong.**
 
 ## Raspberry Pi setup
 
-Install the RGB matrix Python bindings from the `hzeller/rpi-rgb-led-matrix` project for your HAT/wiring, then install this project's dependencies:
+The quick path — run from the project directory as your normal user:
 
 ```bash
-python3 -m venv .venv --system-site-packages
-source .venv/bin/activate
-pip install -r requirements.txt
+bash setup.sh
 ```
 
-The `--system-site-packages` flag is useful if the `rgbmatrix` bindings were installed system-wide.
+`setup.sh` installs system deps, creates the `.venv`, installs requirements, seeds `.env`, adds a temporary swapfile for the memory-hungry build, runs Adafruit's `rgb-matrix.py` bindings installer, and copies the compiled `rgbmatrix` package into the project venv. It is idempotent and reboots partway through the bindings install — just re-run it after the reboot to finish.
 
-This install sometimes crashes the raspberry pi zero, I had to do some fancy workarounds. Might be easier to use a pi with more memory!
+> **Note:** the current Adafruit installer builds `rgbmatrix` into its *own* private venv, so a `--system-site-packages` venv does **not** inherit it — the bindings must be copied into `.venv`. `setup.sh` handles this. See `CLAUDE.md` for the full explanation and the manual steps.
 
 ## Spotify setup
 
-In the Spotify developer dashboard, make sure this redirect URI is allowlisted exactly:
+In the [Spotify developer dashboard](https://developer.spotify.com/dashboard), create an app with **Web API** enabled and allowlist this redirect URI **exactly**:
 
 ```text
 http://127.0.0.1:8888/callback
 ```
 
-For a headless Pi, forward the callback port from your computer:
+Put the client ID/secret in `.env` (copy `.env.example`). Then authorize. For a headless Pi, forward the callback port from a machine with a browser:
 
 ```bash
-ssh -L 8888:127.0.0.1:8888 pi@raspberrypi.local
+# on your laptop
+ssh -L 8888:127.0.0.1:8888 nova@nova.local
+
+# on the Pi (inside that session)
+cd ~/spotify-matrix
+sudo -E .venv/bin/python spotify_matrix.py --auth-only --no-browser
 ```
 
-Then run the script on the Pi and open the printed authorization URL in your local browser.
+Open the printed authorization URL in your laptop browser. The callback flows back through the tunnel and the token is cached to `.cache/spotify_token.json`.
 
 ## Run
 
-This is the working command to run the script on your raspberry pi:
+The working command for the Pi Zero 2 W + Bonnet + 32x32 panel:
 
 ```bash
 sudo -E .venv/bin/python spotify_matrix.py \
-  --rows 64 \
-  --cols 64 \
-  --chain-length 1 \
-  --parallel 1 \
-  --gpio-slowdown 4 \
+  --rows 32 --cols 32 \
+  --gpio-slowdown 5 \
   --no-hardware-pulse \
   --hardware-mapping adafruit-hat
 ```
 
-Useful hardware options:
+Notes:
+- Defaults are **64x64** — override `--rows`/`--cols` for other panels.
+- `--gpio-slowdown` (5 here) is the Bonnet installer's recommended value; lower it if the display is fine, raise it if you see noise/flicker.
+- `--no-hardware-pulse` avoids the Pi's onboard-audio conflict (no PWM solder mod).
+- Runs as `sudo` on purpose: the matrix needs GPIO, and the app keeps root (`drop_privileges=False`) so the background thread can download album art.
+
+### Verify hardware without Spotify
 
 ```bash
-sudo -E .venv/bin/python spotify_matrix.py \
-  --hardware-mapping regular \
-  --gpio-slowdown 2 \
-  --brightness 65
+# bright moving color bars (no credentials needed)
+sudo -E .venv/bin/python spotify_matrix.py --rows 32 --cols 32 \
+  --gpio-slowdown 5 --no-hardware-pulse --hardware-mapping adafruit-hat --test-pattern
 ```
 
-For a non-Pi test that writes one PNG frame instead of using matrix hardware:
+### Preview the render on any machine (no Pi hardware)
 
 ```bash
-python spotify_matrix.py --mock-output /tmp/spotify-matrix-frame.png --once
+# one PNG frame of the current state
+python spotify_matrix.py --rows 32 --cols 32 --mock-output /tmp/frame.png --once
+
+# four spinning-disk sample frames at your panel resolution
+python spotify_matrix.py --rows 32 --cols 32 --preview-frames /tmp/preview
 ```
 
-To verify the album art is what spins on the disk, render four local preview frames:
+## Auto-start on boot (systemd)
+
+Install `spotify-matrix.service` so the panel starts on power-up (symlinked, so editing the repo copy edits the installed unit):
 
 ```bash
-python spotify_matrix.py --preview-frames /tmp/spotify-matrix-preview
+sudo ln -sf /home/nova/spotify-matrix/spotify-matrix.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now spotify-matrix.service
+```
+
+The service runs as root, waits for the network, restarts on failure, and stops with SIGINT so the panel clears cleanly. Authorize Spotify (above) before enabling it — it relies on the cached token.
+
+## Common commands
+
+Run these from your Mac unless noted. Host is `nova@nova.local`, project at `~/spotify-matrix`.
+
+**Sync a changed file to the Pi and restart the service to pick it up:**
+
+```bash
+# copy the code over, then restart in one line
+scp spotify_matrix.py nova@nova.local:~/spotify-matrix/ && \
+  ssh nova@nova.local 'sudo systemctl restart spotify-matrix.service'
+
+# copy several files
+scp spotify_matrix.py spotify-matrix.service CLAUDE.md nova@nova.local:~/spotify-matrix/
+```
+
+**Service control (on the Pi, or prefix with `ssh nova@nova.local '<cmd>'`):**
+
+```bash
+sudo systemctl restart spotify-matrix.service   # pick up code / .env changes
+sudo systemctl status  spotify-matrix.service   # is it running?
+sudo systemctl stop    spotify-matrix.service    # stop (e.g. to run in foreground)
+sudo systemctl start   spotify-matrix.service    # start again
+sudo systemctl disable spotify-matrix.service    # don't start on boot
+journalctl -u spotify-matrix.service -f          # follow live logs
+```
+
+**Edited the unit file itself?** Reload systemd, then restart:
+
+```bash
+sudo systemctl daemon-reload && sudo systemctl restart spotify-matrix.service
+```
+
+**Debug in the foreground** (stop the service first — two processes can't share the matrix GPIO):
+
+```bash
+sudo systemctl stop spotify-matrix.service
+cd ~/spotify-matrix
+sudo -E .venv/bin/python spotify_matrix.py --rows 32 --cols 32 \
+  --gpio-slowdown 5 --no-hardware-pulse --hardware-mapping adafruit-hat
+# ...Ctrl-C when done...
+sudo systemctl start spotify-matrix.service
+```
+
+**Re-authorize Spotify** (token expired / revoked):
+
+```bash
+# laptop: ssh -L 8888:127.0.0.1:8888 nova@nova.local
+sudo systemctl stop spotify-matrix.service
+sudo -E .venv/bin/python ~/spotify-matrix/spotify_matrix.py --auth-only --no-browser
+sudo systemctl start spotify-matrix.service
+```
+
+**Reboot the Pi** (the service auto-starts again):
+
+```bash
+ssh nova@nova.local 'sudo reboot'
 ```
