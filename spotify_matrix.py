@@ -961,7 +961,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Avoid Pi onboard sound conflict at the cost of more possible flicker.",
     )
     parser.add_argument("--poll-seconds", type=positive_float, default=2.0)
-    parser.add_argument("--fps", type=positive_float, default=20.0)
+    parser.add_argument("--fps", type=positive_float, default=120.0)
     parser.add_argument("--rpm", type=positive_float, default=20.0)
     parser.add_argument("--spin-lag", type=positive_float, default=0.5, help="Seconds-scale easing for spin-up on play and coast-down on pause. Lower is snappier.")
     parser.add_argument("--transition-seconds", type=positive_float, default=1.0, help="Duration of the random album-art change transition.")

@@ -17,7 +17,8 @@ ExecStart=/home/nova/spotify-matrix/.venv/bin/python /home/nova/spotify-matrix/s
     --gpio-slowdown 5 \
     --no-hardware-pulse \
     --hardware-mapping adafruit-hat \
-    --limit-refresh-rate-hz 0
+    --limit-refresh-rate-hz 120 \
+    --fps 120
 # After the GPIO 4->18 PWM solder + disabling onboard audio, switch the two
 # lines above to hardware PWM for flicker-free output:
 #     --hardware-mapping adafruit-hat-pwm
