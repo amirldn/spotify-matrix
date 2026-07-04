@@ -784,15 +784,21 @@ def run(args: argparse.Namespace) -> None:
             delta = now - last_frame
             last_frame = now
 
-            # Start a transition when the album art changes and we have art to swap from.
+            # Start a transition when the shown art changes and we're moving to real
+            # album art. This covers idle -> playing (transition in from the ghost
+            # record) as well as song -> song. Fully stopping (-> idle) stays instant
+            # to avoid spurious fade-outs on brief blips between tracks.
             if (
                 not args.no_transitions
                 and active_transition is None
                 and new_key != displayed_key
                 and new_image is not None
-                and displayed_image is not None
             ):
-                old_frame = render_record(displayed_image, angle, size)
+                old_frame = (
+                    render_record(displayed_image, angle, size)
+                    if displayed_image is not None
+                    else idle
+                )
                 new_frame = render_record(new_image, angle, size)
                 cls = pick_transition(last_transition_cls)
                 last_transition_cls = cls
