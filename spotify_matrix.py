@@ -913,7 +913,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fps", type=positive_float, default=20.0)
     parser.add_argument("--rpm", type=positive_float, default=20.0)
     parser.add_argument("--spin-lag", type=positive_float, default=0.5, help="Seconds-scale easing for spin-up on play and coast-down on pause. Lower is snappier.")
-    parser.add_argument("--transition-seconds", type=positive_float, default=0.6, help="Duration of the random album-art change transition.")
+    parser.add_argument("--transition-seconds", type=positive_float, default=1.0, help="Duration of the random album-art change transition.")
     parser.add_argument("--no-transitions", action="store_true", help="Swap album art instantly instead of animating a random transition.")
     parser.add_argument("--token-cache", type=Path, default=Path(".cache/spotify_token.json"))
     parser.add_argument("--mock-output", type=Path, help="Write the current frame PNG instead of using RGB matrix hardware.")

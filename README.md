@@ -87,7 +87,7 @@ python spotify_matrix.py --rows 32 --cols 32 --preview-frames /tmp/preview
 python spotify_matrix.py --preview-transitions /tmp/transitions
 ```
 
-Transition behaviour is tunable: `--transition-seconds` (default 0.6) sets the duration, and `--no-transitions` swaps art instantly instead. `--spin-lag` (default 0.5) controls how quickly the record spins up on play and coasts down on pause.
+Transition behaviour is tunable: `--transition-seconds` (default 1.0) sets the duration, and `--no-transitions` swaps art instantly instead. `--spin-lag` (default 0.5) controls how quickly the record spins up on play and coasts down on pause.
 
 ## Auto-start on boot (systemd)
 
