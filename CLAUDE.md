@@ -96,6 +96,7 @@ Verified: survives reboot and auto-starts.
 ## Animation features (added after initial commit)
 - **Turntable spin model:** the main loop eases an angular `spin_velocity` toward a target (full speed when playing, 0 when paused) via exponential decay, so the record spins up on play and coasts to a halt on pause. Tunable with `--spin-lag`.
 - **Random song-change transitions:** 8 transition classes (`Crossfade`, `PixelDissolve`, `Iris`, `RecordSwap`, `FlipSide`, `SpinWhip`, `TonearmSweep`, `ScratchGlitch`) with a uniform `__init__(old_frame, new_frame, size)` + `__call__(t)->frame` interface. The loop detects an `art_key` change, freezes the spin, plays a random transition (`pick_transition` avoids immediate repeats) for `--transition-seconds` (default 1.0), then spins the new art up. `--no-transitions` restores the instant swap. PIL-only (no numpy). Preview all 8 locally with `--preview-transitions DIR` (writes filmstrips + GIFs, credential-free).
+- **Idle analog clock:** after `--idle-clock-seconds` (default 60) of nothing playing, the idle ghost ring (`render_idle`) fades over ~1s into a dim analog clock (`render_clock`, hour+minute hands, no font). `--no-idle-clock` disables it. The loop tracks `idle_since` (monotonic) and `last_idle_frame` (so resuming playback transitions out from whatever idle showed — ring or clock). **Uses the Pi's system timezone** — if the time is wrong, `sudo timedatectl set-timezone Europe/London`.
 
 ## Local fixes to the script (differ from the initial commit)
 

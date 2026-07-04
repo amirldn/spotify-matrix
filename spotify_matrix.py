@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import datetime
 from io import BytesIO
 import json
 import math
@@ -456,6 +457,34 @@ def render_idle(size: int) -> Image.Image:
     return frame
 
 
+def render_clock(size: int, when: datetime.datetime) -> Image.Image:
+    # A dim analog clock on the faint record ring - the idle screen turned timepiece.
+    frame = Image.new("RGB", (size, size), (0, 0, 0))
+    draw = ImageDraw.Draw(frame)
+    cx = cy = (size - 1) / 2.0
+    r = size / 2.0 - max(1, size // 40) - 1
+
+    draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=(45, 45, 52), width=1)
+
+    def hand_point(theta: float, length: float) -> tuple[float, float]:
+        return cx + length * math.sin(theta), cy - length * math.cos(theta)
+
+    # Tick marks: brighter at 12/3/6/9, faint for the rest.
+    for hour in range(12):
+        theta = math.radians(hour * 30)
+        cardinal = hour % 3 == 0
+        outer = hand_point(theta, r - 1)
+        inner = hand_point(theta, r - (3 if cardinal else 2))
+        draw.line((*inner, *outer), fill=(85, 85, 95) if cardinal else (50, 50, 58), width=1)
+
+    hour_theta = math.radians((when.hour % 12 + when.minute / 60.0) * 30)
+    minute_theta = math.radians(when.minute * 6)
+    draw.line((cx, cy, *hand_point(hour_theta, r * 0.5)), fill=(120, 120, 135), width=2)
+    draw.line((cx, cy, *hand_point(minute_theta, r * 0.78)), fill=(155, 155, 175), width=1)
+    draw.ellipse((cx - 1, cy - 1, cx + 1, cy + 1), fill=(95, 95, 108))
+    return frame
+
+
 def render_test_pattern(size: int, offset: int) -> Image.Image:
     frame = Image.new("RGB", (size, size), (0, 0, 0))
     draw = ImageDraw.Draw(frame)
@@ -771,6 +800,8 @@ def run(args: argparse.Namespace) -> None:
     active_transition = None
     transition_end = 0.0
     last_transition_cls: type | None = None
+    idle_since: float | None = None      # monotonic time we went idle (None = playing)
+    last_idle_frame = idle               # what the idle screen currently shows (ring or clock)
 
     try:
         while True:
@@ -797,7 +828,7 @@ def run(args: argparse.Namespace) -> None:
                 old_frame = (
                     render_record(displayed_image, angle, size)
                     if displayed_image is not None
-                    else idle
+                    else last_idle_frame  # transition out from whatever idle showed (ring or clock)
                 )
                 new_frame = render_record(new_image, angle, size)
                 cls = pick_transition(last_transition_cls)
@@ -826,7 +857,21 @@ def run(args: argparse.Namespace) -> None:
                 if target_speed == 0.0 and spin_velocity < 1.0:
                     spin_velocity = 0.0  # snap the final crawl to a clean stop
                 angle = (angle - spin_velocity * delta) % 360.0
-                image = render_record(displayed_image, angle, size) if displayed_image else idle
+
+                if displayed_image is not None:
+                    idle_since = None
+                    image = render_record(displayed_image, angle, size)
+                else:
+                    # Nothing playing: ghost ring, then fade to a dim clock after a while.
+                    if idle_since is None:
+                        idle_since = now
+                    elapsed = now - idle_since
+                    if not args.no_idle_clock and elapsed >= args.idle_clock_seconds:
+                        clock = render_clock(size, datetime.datetime.now())
+                        image = Image.blend(idle, clock, min(1.0, elapsed - args.idle_clock_seconds))
+                    else:
+                        image = idle
+                    last_idle_frame = image
 
             display.show(image)
 
@@ -921,6 +966,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--spin-lag", type=positive_float, default=0.5, help="Seconds-scale easing for spin-up on play and coast-down on pause. Lower is snappier.")
     parser.add_argument("--transition-seconds", type=positive_float, default=1.0, help="Duration of the random album-art change transition.")
     parser.add_argument("--no-transitions", action="store_true", help="Swap album art instantly instead of animating a random transition.")
+    parser.add_argument("--idle-clock-seconds", type=positive_float, default=60.0, help="Seconds of nothing playing before the idle screen fades to a dim analog clock.")
+    parser.add_argument("--no-idle-clock", action="store_true", help="Keep the idle ghost record instead of showing a clock when idle.")
     parser.add_argument("--token-cache", type=Path, default=Path(".cache/spotify_token.json"))
     parser.add_argument("--mock-output", type=Path, help="Write the current frame PNG instead of using RGB matrix hardware.")
     parser.add_argument("--preview-frames", type=Path, help="Render sample spinning-album-art disk frames and exit.")
