@@ -93,6 +93,10 @@ Verified: survives reboot and auto-starts.
 - **Debugging code:** stop the service and run in the foreground for live output — `sudo systemctl stop spotify-matrix.service` then the manual run command; `systemctl start` when done. (Two processes can't share the matrix GPIO.)
 - Logs: `journalctl -u spotify-matrix.service -f`
 
+## Animation features (added after initial commit)
+- **Turntable spin model:** the main loop eases an angular `spin_velocity` toward a target (full speed when playing, 0 when paused) via exponential decay, so the record spins up on play and coasts to a halt on pause. Tunable with `--spin-lag`.
+- **Random song-change transitions:** 8 transition classes (`Crossfade`, `PixelDissolve`, `Iris`, `RecordSwap`, `FlipSide`, `SpinWhip`, `TonearmSweep`, `ScratchGlitch`) with a uniform `__init__(old_frame, new_frame, size)` + `__call__(t)->frame` interface. The loop detects an `art_key` change, freezes the spin, plays a random transition (`pick_transition` avoids immediate repeats) for `--transition-seconds` (default 0.6), then spins the new art up. `--no-transitions` restores the instant swap. PIL-only (no numpy). Preview all 8 locally with `--preview-transitions DIR` (writes filmstrips + GIFs, credential-free).
+
 ## Local fixes to the script (differ from the initial commit)
 
 - **`--test-pattern` and `--preview-frames` no longer require Spotify credentials.** The credential check in `run()` used to run *before* the test-pattern branch, so a hardware-only test still failed with "Missing required environment values". Fixed by moving the no-Spotify modes to the top of `run()` and extracting a `build_display(args)` helper. Now you can verify the panel before doing any Spotify setup.

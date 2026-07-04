@@ -1,6 +1,6 @@
 # Spotify Matrix
 
-Shows the current Spotify album art on an RGB LED matrix as a spinning vinyl record. The album art *is* the record surface: it is cropped to a disk, spun while Spotify reports playback as active, and left stopped at the current angle when paused.
+Shows the current Spotify album art on an RGB LED matrix as a spinning vinyl record. The album art *is* the record surface: it is cropped to a disk and spins while Spotify reports playback as active. Pause the music and it coasts to a halt like a real turntable; change the song and one of 8 random transitions plays (crossfade, record swap, flip, spin-whip, tonearm sweep, scratch glitch, iris, pixel dissolve).
 
 This uses Spotify's Web API `currently-playing` endpoint, not the browser-only Web Playback SDK. The first run opens Spotify OAuth, then the script stores a refresh token in `.cache/spotify_token.json`.
 
@@ -82,7 +82,12 @@ python spotify_matrix.py --rows 32 --cols 32 --mock-output /tmp/frame.png --once
 
 # four spinning-disk sample frames at your panel resolution
 python spotify_matrix.py --rows 32 --cols 32 --preview-frames /tmp/preview
+
+# filmstrips + animated GIFs of all 8 song-change transitions
+python spotify_matrix.py --preview-transitions /tmp/transitions
 ```
+
+Transition behaviour is tunable: `--transition-seconds` (default 0.6) sets the duration, and `--no-transitions` swaps art instantly instead. `--spin-lag` (default 0.5) controls how quickly the record spins up on play and coasts down on pause.
 
 ## Auto-start on boot (systemd)
 

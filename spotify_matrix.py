@@ -7,6 +7,7 @@ from io import BytesIO
 import json
 import math
 import os
+import random
 import secrets
 import threading
 import time
@@ -20,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageDraw, ImageOps
+from PIL import Image, ImageChops, ImageDraw, ImageOps
 
 try:
     from dotenv import load_dotenv
@@ -478,6 +479,168 @@ def render_test_pattern(size: int, offset: int) -> Image.Image:
     return frame
 
 
+# --- Song-change transitions -------------------------------------------------
+# Each transition is constructed once per song change with the old and new
+# rendered disc frames, then called per rendered frame with t in [0, 1] and
+# returns the composited frame. Constructing up front lets each precompute its
+# own state (noise map, spin direction, glitch RNG) - no shared state.
+
+
+class Crossfade:
+    def __init__(self, old: Image.Image, new: Image.Image, size: int) -> None:
+        self.old = old
+        self.new = new
+
+    def __call__(self, t: float) -> Image.Image:
+        return Image.blend(self.old, self.new, t)
+
+
+class PixelDissolve:
+    def __init__(self, old: Image.Image, new: Image.Image, size: int) -> None:
+        self.old = old
+        self.new = new
+        # A fixed uniform-random field; each pixel crosses over once t passes its value.
+        field = bytes(random.randrange(256) for _ in range(size * size))
+        self.noise = Image.frombytes("L", (size, size), field)
+
+    def __call__(self, t: float) -> Image.Image:
+        cutoff = int(t * 255)
+        mask = self.noise.point(lambda p: 255 if p <= cutoff else 0)
+        return Image.composite(self.new, self.old, mask)
+
+
+class Iris:
+    def __init__(self, old: Image.Image, new: Image.Image, size: int) -> None:
+        self.old = old
+        self.new = new
+        self.size = size
+
+    def __call__(self, t: float) -> Image.Image:
+        mask = Image.new("L", (self.size, self.size), 0)
+        r = t * self.size * 0.72  # 0.72*size > center-to-corner, so t=1 fully reveals
+        c = self.size / 2
+        ImageDraw.Draw(mask).ellipse((c - r, c - r, c + r, c + r), fill=255)
+        return Image.composite(self.new, self.old, mask)
+
+
+class RecordSwap:
+    def __init__(self, old: Image.Image, new: Image.Image, size: int) -> None:
+        self.old = old
+        self.new = new
+        self.size = size
+
+    def __call__(self, t: float) -> Image.Image:
+        s = self.size
+        frame = Image.new("RGB", (s, s), (0, 0, 0))
+        offset = int(round(t * s))
+        frame.paste(self.old, (0, -offset))      # old lifts up and out the top
+        frame.paste(self.new, (0, s - offset))   # new rises into place from below
+        return frame
+
+
+class FlipSide:
+    def __init__(self, old: Image.Image, new: Image.Image, size: int) -> None:
+        self.old = old
+        self.new = new
+        self.size = size
+
+    def __call__(self, t: float) -> Image.Image:
+        s = self.size
+        frame = Image.new("RGB", (s, s), (0, 0, 0))
+        if t < 0.5:
+            width = max(1, int(round(s * (1.0 - t * 2.0))))
+            img = self.old
+        else:
+            width = max(1, int(round(s * (t * 2.0 - 1.0))))
+            img = self.new
+        squashed = img.resize((width, s), Image.BILINEAR)
+        frame.paste(squashed, ((s - width) // 2, 0))
+        return frame
+
+
+class SpinWhip:
+    def __init__(self, old: Image.Image, new: Image.Image, size: int) -> None:
+        self.old = old
+        self.new = new
+        self.direction = random.choice((-1, 1))
+
+    def __call__(self, t: float) -> Image.Image:
+        img = self.old if t < 0.5 else self.new  # swap under cover of peak blur
+        smear = math.sin(math.pi * t) * 45.0      # degrees of motion blur, peaks mid
+        base_spin = t * 90.0 * self.direction
+        samples = 5
+        acc = None
+        for i in range(samples):
+            frac = i / (samples - 1)
+            angle = base_spin + self.direction * smear * (frac - 0.5)
+            rotated = img.rotate(angle, resample=Image.BILINEAR)
+            acc = rotated if acc is None else Image.blend(acc, rotated, 1.0 / (i + 1))
+        return acc
+
+
+class TonearmSweep:
+    def __init__(self, old: Image.Image, new: Image.Image, size: int) -> None:
+        self.old = old
+        self.new = new
+        self.size = size
+        self.start = random.uniform(0.0, 360.0)
+
+    def __call__(self, t: float) -> Image.Image:
+        s = self.size
+        if t >= 1.0:
+            return self.new
+        mask = Image.new("L", (s, s), 0)
+        if t > 0.0:
+            ImageDraw.Draw(mask).pieslice(
+                (0, 0, s - 1, s - 1), self.start, self.start + t * 360.0, fill=255
+            )
+        return Image.composite(self.new, self.old, mask)
+
+
+class ScratchGlitch:
+    def __init__(self, old: Image.Image, new: Image.Image, size: int) -> None:
+        self.old = old
+        self.new = new
+        self.size = size
+        self.rng = random.Random(random.random())
+
+    def __call__(self, t: float) -> Image.Image:
+        s = self.size
+        base = Image.blend(self.old, self.new, t)  # crossfade underneath the glitch
+        intensity = math.sin(math.pi * t)          # glitch strongest mid-transition
+        glitched = base.copy()
+        band_h = max(1, s // 5)
+        for y in range(0, s, band_h):
+            if self.rng.random() < 0.6 * intensity:
+                dx = self.rng.randint(-4, 4)
+                band = base.crop((0, y, s, min(s, y + band_h)))
+                glitched.paste(band, (dx, y))
+        offset = int(round(3 * intensity))
+        if offset > 0:
+            r, g, b = glitched.split()
+            glitched = Image.merge(
+                "RGB", (ImageChops.offset(r, offset, 0), g, ImageChops.offset(b, -offset, 0))
+            )
+        return glitched
+
+
+TRANSITIONS = [
+    Crossfade,
+    PixelDissolve,
+    Iris,
+    RecordSwap,
+    FlipSide,
+    SpinWhip,
+    TonearmSweep,
+    ScratchGlitch,
+]
+
+
+def pick_transition(last: type | None) -> type:
+    choices = [tx for tx in TRANSITIONS if tx is not last] or TRANSITIONS
+    return random.choice(choices)
+
+
 def poll_spotify(
     spotify: SpotifyClient,
     state: SharedPlaybackState,
@@ -533,6 +696,10 @@ def run(args: argparse.Namespace) -> None:
     # Modes that never touch Spotify run first, so they never need credentials.
     if args.preview_frames:
         render_preview_frames(args.preview_frames, min(args.rows, args.cols))
+        return
+
+    if args.preview_transitions:
+        render_transition_previews(args.preview_transitions)
         return
 
     size = min(args.rows, args.cols)
@@ -599,26 +766,62 @@ def run(args: argparse.Namespace) -> None:
     full_speed = 360.0 * (args.rpm / 60.0)
     last_frame = time.monotonic()
 
+    displayed_image: Image.Image | None = None
+    displayed_key: str | None = None
+    active_transition = None
+    transition_end = 0.0
+    last_transition_cls: type | None = None
+
     try:
         while True:
             frame_start = time.monotonic()
             with playback_lock:
-                current_art_image = playback_state.image
+                new_image = playback_state.image
+                new_key = playback_state.art_key
                 is_playing = playback_state.is_playing
 
             now = time.monotonic()
             delta = now - last_frame
             last_frame = now
 
-            target_speed = full_speed if (is_playing and current_art_image is not None) else 0.0
-            # Ease the velocity toward the target so the record spins up on play
-            # and coasts to a halt on pause, like a real turntable.
-            spin_velocity += (target_speed - spin_velocity) * (1.0 - math.exp(-delta / args.spin_lag))
-            if target_speed == 0.0 and spin_velocity < 1.0:
-                spin_velocity = 0.0  # snap the final crawl to a clean stop
-            angle = (angle - spin_velocity * delta) % 360.0
+            # Start a transition when the album art changes and we have art to swap from.
+            if (
+                not args.no_transitions
+                and active_transition is None
+                and new_key != displayed_key
+                and new_image is not None
+                and displayed_image is not None
+            ):
+                old_frame = render_record(displayed_image, angle, size)
+                new_frame = render_record(new_image, angle, size)
+                cls = pick_transition(last_transition_cls)
+                last_transition_cls = cls
+                active_transition = cls(old_frame, new_frame, size)
+                transition_end = now + args.transition_seconds
+                spin_velocity = 0.0  # hold the record still while it swaps
+                displayed_image = new_image
+                displayed_key = new_key
 
-            image = render_record(current_art_image, angle, size) if current_art_image else idle
+            if active_transition is not None:
+                # Play the transition; keep the disc angle frozen (the "hold").
+                t = 1.0 - max(0.0, transition_end - now) / args.transition_seconds
+                if t >= 1.0:
+                    active_transition = None
+                    image = render_record(displayed_image, angle, size) if displayed_image else idle
+                else:
+                    image = active_transition(t)
+            else:
+                # No transition: adopt the current art and run the normal spin model.
+                displayed_image = new_image
+                displayed_key = new_key
+                target_speed = full_speed if (is_playing and displayed_image is not None) else 0.0
+                # Ease velocity toward target: spin-up on play, coast-down on pause.
+                spin_velocity += (target_speed - spin_velocity) * (1.0 - math.exp(-delta / args.spin_lag))
+                if target_speed == 0.0 and spin_velocity < 1.0:
+                    spin_velocity = 0.0  # snap the final crawl to a clean stop
+                angle = (angle - spin_velocity * delta) % 360.0
+                image = render_record(displayed_image, angle, size) if displayed_image else idle
+
             display.show(image)
 
             if args.once:
@@ -649,6 +852,47 @@ def render_preview_frames(directory: Path, size: int) -> None:
     render_idle(size).save(directory / "idle.png")
 
 
+def render_transition_previews(directory: Path, size: int = 32) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    old_art = demo_album_art(size * 3)
+    # A channel-rotated copy makes a clearly-different "new" album to transition to.
+    r, g, b = demo_album_art(size * 3).split()
+    new_art = Image.merge("RGB", (b, r, g))
+    old_frame = render_record(old_art, 0.0, size)
+    new_frame = render_record(new_art, 0.0, size)
+
+    scale = 6
+    strip_steps = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
+    gif_count = 24
+    for cls in TRANSITIONS:
+        # Filmstrip: a few key moments side by side.
+        transition = cls(old_frame, new_frame, size)
+        shots = [transition(t) for t in strip_steps]
+        strip = Image.new("RGB", (size * len(shots) + 2 * (len(shots) - 1), size), (30, 30, 30))
+        x = 0
+        for shot in shots:
+            strip.paste(shot, (x, 0))
+            x += size + 2
+        strip.resize((strip.width * scale, strip.height * scale), Image.NEAREST).save(
+            directory / f"{cls.__name__}-strip.png"
+        )
+
+        # Animated GIF: a fresh instance so per-frame randomness (glitch) plays out.
+        animation = cls(old_frame, new_frame, size)
+        frames = [
+            animation(i / (gif_count - 1)).resize((size * scale, size * scale), Image.NEAREST)
+            for i in range(gif_count)
+        ]
+        frames[0].save(
+            directory / f"{cls.__name__}.gif",
+            save_all=True,
+            append_images=frames[1:],
+            duration=int(600 / gif_count),
+            loop=0,
+        )
+    print(f"Wrote {len(TRANSITIONS)} transition previews (strips + GIFs) to {directory}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Spin Spotify album art on a 64x64 RGB matrix.")
     parser.add_argument("--rows", type=int, default=64)
@@ -669,9 +913,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fps", type=positive_float, default=20.0)
     parser.add_argument("--rpm", type=positive_float, default=20.0)
     parser.add_argument("--spin-lag", type=positive_float, default=0.5, help="Seconds-scale easing for spin-up on play and coast-down on pause. Lower is snappier.")
+    parser.add_argument("--transition-seconds", type=positive_float, default=0.6, help="Duration of the random album-art change transition.")
+    parser.add_argument("--no-transitions", action="store_true", help="Swap album art instantly instead of animating a random transition.")
     parser.add_argument("--token-cache", type=Path, default=Path(".cache/spotify_token.json"))
     parser.add_argument("--mock-output", type=Path, help="Write the current frame PNG instead of using RGB matrix hardware.")
     parser.add_argument("--preview-frames", type=Path, help="Render sample spinning-album-art disk frames and exit.")
+    parser.add_argument("--preview-transitions", type=Path, help="Render sample song-change transition filmstrips and GIFs, then exit.")
     parser.add_argument("--auth-only", action="store_true", help="Authorize Spotify, cache the token, and exit without using the matrix.")
     parser.add_argument("--test-pattern", action="store_true", help="Show a bright moving color test pattern without using Spotify.")
     parser.add_argument("--once", action="store_true", help="Render one frame and exit.")
