@@ -110,8 +110,17 @@ class SpotifyClient:
         self.token_cache = token_cache
         self.open_browser = open_browser
         self.token = self._load_token()
+        # Monotonic-ish wall-clock deadline: while now < this, we're honoring a
+        # Spotify 429 back-off and skip polling entirely (see get_currently_playing).
+        self.rate_limited_until = 0.0
 
     def get_currently_playing(self) -> dict[str, Any] | None:
+        # Honor a prior 429 without blocking the poll thread: during the back-off
+        # window we simply report "nothing playing" and make no request at all, so
+        # the render loop stays alive and we auto-recover the moment it expires.
+        if time.time() < self.rate_limited_until:
+            return None
+
         token = self._valid_access_token()
         response = http_request(
             "GET",
@@ -127,8 +136,12 @@ class SpotifyClient:
             self._refresh_access_token()
             return self.get_currently_playing()
         if response.status == 429:
-            retry_after = int(response.headers.get("Retry-After", "5"))
-            time.sleep(max(retry_after, 1))
+            retry_after = max(int(response.headers.get("Retry-After", "5")), 1)
+            # Do NOT sleep here: Spotify can return a multi-hour Retry-After, and
+            # sleeping on the poll thread would freeze the display for that long.
+            # Instead record a deadline and return; subsequent polls short-circuit.
+            self.rate_limited_until = time.time() + retry_after
+            print(f"Spotify rate-limited (429); backing off {retry_after}s", flush=True)
             return None
         if response.status != 200:
             raise_http_error(response, "Spotify currently-playing request")
@@ -960,7 +973,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Avoid Pi onboard sound conflict at the cost of more possible flicker.",
     )
-    parser.add_argument("--poll-seconds", type=positive_float, default=2.0)
+    parser.add_argument("--poll-seconds", type=positive_float, default=5.0)
     parser.add_argument("--fps", type=positive_float, default=120.0)
     parser.add_argument("--rpm", type=positive_float, default=20.0)
     parser.add_argument("--spin-lag", type=positive_float, default=0.5, help="Seconds-scale easing for spin-up on play and coast-down on pause. Lower is snappier.")
