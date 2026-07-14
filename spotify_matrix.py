@@ -324,6 +324,21 @@ class LocalCallbackServer:
         return self.code
 
 
+# Map a clockwise rotation (degrees) to the equivalent PIL transpose. PIL's own
+# rotate() counts counter-clockwise, so 90 CW == ROTATE_270. Used to reorient the
+# whole output when the panel is mounted rotated (e.g. on a wall).
+_ROTATE_TRANSPOSE = {
+    90: Image.Transpose.ROTATE_270,
+    180: Image.Transpose.ROTATE_180,
+    270: Image.Transpose.ROTATE_90,
+}
+
+
+def rotate_frame(image: Image.Image, degrees: int) -> Image.Image:
+    transpose = _ROTATE_TRANSPOSE.get(degrees % 360)
+    return image.transpose(transpose) if transpose else image
+
+
 class MatrixDisplay:
     def __init__(self, args: argparse.Namespace) -> None:
         try:
@@ -350,11 +365,12 @@ class MatrixDisplay:
         # fetch/decode the image). We launch with sudo intentionally, so keep root.
         options.drop_privileges = False
 
+        self.rotate = args.rotate
         self.matrix = RGBMatrix(options=options)
         self.canvas = self.matrix.CreateFrameCanvas()
 
     def show(self, image: Image.Image) -> None:
-        self.canvas.SetImage(image.convert("RGB"))
+        self.canvas.SetImage(rotate_frame(image, self.rotate).convert("RGB"))
         self.canvas = self.matrix.SwapOnVSync(self.canvas)
 
     def clear(self) -> None:
@@ -362,12 +378,13 @@ class MatrixDisplay:
 
 
 class MockDisplay:
-    def __init__(self, output: Path) -> None:
+    def __init__(self, output: Path, rotate: int = 0) -> None:
         self.output = output
+        self.rotate = rotate
         self.output.parent.mkdir(parents=True, exist_ok=True)
 
     def show(self, image: Image.Image) -> None:
-        image.save(self.output)
+        rotate_frame(image, self.rotate).save(self.output)
 
     def clear(self) -> None:
         return
@@ -770,7 +787,7 @@ def poll_spotify(
 
 def build_display(args: argparse.Namespace) -> MatrixDisplay | MockDisplay:
     if args.mock_output:
-        return MockDisplay(args.mock_output)
+        return MockDisplay(args.mock_output, args.rotate)
     return MatrixDisplay(args)
 
 
@@ -1033,6 +1050,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Slow poll cadence when idle or paused, and the cap on the playing cadence. "
         "Also the max lag before a resume/skip/seek is noticed. Raise it to cut API "
         "requests further; lower it for snappier response.",
+    )
+    parser.add_argument(
+        "--rotate",
+        type=int,
+        choices=[0, 90, 180, 270],
+        default=0,
+        help="Rotate the whole display this many degrees CLOCKWISE. Use when the "
+        "panel is mounted rotated (e.g. on a wall).",
     )
     parser.add_argument("--fps", type=positive_float, default=120.0)
     parser.add_argument("--rpm", type=positive_float, default=20.0)
