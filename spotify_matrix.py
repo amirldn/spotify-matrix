@@ -114,7 +114,7 @@ class SpotifyClient:
         # Spotify 429 back-off and skip polling entirely (see get_currently_playing).
         self.rate_limited_until = 0.0
 
-    def get_currently_playing(self) -> dict[str, Any] | None:
+    def get_currently_playing(self, refresh_retry: bool = True) -> dict[str, Any] | None:
         # Honor a prior 429 without blocking the poll thread: during the back-off
         # window we simply report "nothing playing" and make no request at all, so
         # the render loop stays alive and we auto-recover the moment it expires.
@@ -133,8 +133,15 @@ class SpotifyClient:
         if response.status == 204:
             return None
         if response.status == 401:
+            # Refresh and retry exactly once. If it STILL 401s, do not recurse:
+            # an unbounded refresh->retry loop hammers the API and is a prime way
+            # to earn a multi-hour 429 ban. Back off briefly and report idle.
+            if not refresh_retry:
+                self.rate_limited_until = time.time() + 30
+                print("Spotify: still unauthorized after refresh; backing off 30s", flush=True)
+                return None
             self._refresh_access_token()
-            return self.get_currently_playing()
+            return self.get_currently_playing(refresh_retry=False)
         if response.status == 429:
             retry_after = max(int(response.headers.get("Retry-After", "5")), 1)
             # Do NOT sleep here: Spotify can return a multi-hour Retry-After, and
@@ -683,16 +690,47 @@ def pick_transition(last: type | None) -> type:
     return random.choice(choices)
 
 
+def compute_poll_delay(
+    playback: dict[str, Any] | None,
+    poll_seconds: float,
+    idle_poll_seconds: float,
+) -> float:
+    """Decide how long to wait before the next Spotify poll.
+
+    Adaptive + predictive, to keep request volume (and rate-limit risk) low:
+    - Nothing playing or paused -> slow idle cadence: the display is showing the
+      clock or a frozen record, so nothing changes in the meantime.
+    - Playing -> the response tells us how much of the track is left, and the art
+      cannot change until it ends. So wait roughly until the track boundary,
+      floored at poll_seconds (don't hammer) and capped at idle_poll_seconds (so a
+      manual skip or seek is still noticed within that window).
+    """
+    if not playback or not playback.get("is_playing"):
+        return idle_poll_seconds
+
+    item = playback.get("item") or {}
+    duration_ms = item.get("duration_ms")
+    progress_ms = playback.get("progress_ms")
+    if not duration_ms or progress_ms is None:
+        return poll_seconds  # local files / missing timing: fall back to base cadence
+
+    remaining_s = max(0.0, (duration_ms - progress_ms) / 1000.0)
+    # +1s so we land just after the track flips, not a beat before it.
+    return min(max(remaining_s + 1.0, poll_seconds), idle_poll_seconds)
+
+
 def poll_spotify(
     spotify: SpotifyClient,
     state: SharedPlaybackState,
     state_lock: threading.Lock,
     stop_event: threading.Event,
     poll_seconds: float,
+    idle_poll_seconds: float,
 ) -> None:
     last_status: str | None = None
 
     while not stop_event.is_set():
+        delay = poll_seconds
         try:
             playback = spotify.get_currently_playing()
             art = playback_art_from_response(playback)
@@ -722,10 +760,12 @@ def poll_spotify(
             if status != last_status:
                 print(f"Spotify: {status}", flush=True)
                 last_status = status
+
+            delay = compute_poll_delay(playback, poll_seconds, idle_poll_seconds)
         except Exception as exc:
             print(f"Spotify poll failed: {exc}", flush=True)
 
-        stop_event.wait(poll_seconds)
+        stop_event.wait(delay)
 
 
 def build_display(args: argparse.Namespace) -> MatrixDisplay | MockDisplay:
@@ -798,7 +838,14 @@ def run(args: argparse.Namespace) -> None:
     stop_event = threading.Event()
     poll_thread = threading.Thread(
         target=poll_spotify,
-        args=(spotify, playback_state, playback_lock, stop_event, args.poll_seconds),
+        args=(
+            spotify,
+            playback_state,
+            playback_lock,
+            stop_event,
+            args.poll_seconds,
+            args.idle_poll_seconds,
+        ),
         daemon=True,
     )
     poll_thread.start()
@@ -973,7 +1020,20 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Avoid Pi onboard sound conflict at the cost of more possible flicker.",
     )
-    parser.add_argument("--poll-seconds", type=positive_float, default=5.0)
+    parser.add_argument(
+        "--poll-seconds",
+        type=positive_float,
+        default=5.0,
+        help="Base poll cadence while a track is playing (floor for predictive polling).",
+    )
+    parser.add_argument(
+        "--idle-poll-seconds",
+        type=positive_float,
+        default=30.0,
+        help="Slow poll cadence when idle or paused, and the cap on the playing cadence. "
+        "Also the max lag before a resume/skip/seek is noticed. Raise it to cut API "
+        "requests further; lower it for snappier response.",
+    )
     parser.add_argument("--fps", type=positive_float, default=120.0)
     parser.add_argument("--rpm", type=positive_float, default=20.0)
     parser.add_argument("--spin-lag", type=positive_float, default=0.5, help="Seconds-scale easing for spin-up on play and coast-down on pause. Lower is snappier.")
