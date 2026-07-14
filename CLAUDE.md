@@ -63,7 +63,8 @@ sudo -E .venv/bin/python spotify_matrix.py \
 ### Tuning knobs (try before soldering)
 - `--gpio-slowdown` (default 2) — bump `4`→`5` if the image is glitchy/noisy. Signal integrity on the Zero 2 W is the most common culprit, not PWM timing.
 - `--brightness` (default 65)
-- `--rpm` (spin speed, default 20), `--fps` (default 20), `--poll-seconds` (default 2)
+- `--rpm` (spin speed, default 20), `--fps` (default 120)
+- `--poll-seconds` (default 5) — base Spotify poll cadence **while playing**. `--idle-poll-seconds` (default 30) — slow cadence when idle/paused, and the cap on the playing cadence (see *Rate-limit-aware polling* below).
 
 ### Testing without hardware
 - `--mock-output frame.png --once` — render one frame to a PNG.
@@ -97,6 +98,17 @@ Verified: survives reboot and auto-starts.
 - **Turntable spin model:** the main loop eases an angular `spin_velocity` toward a target (full speed when playing, 0 when paused) via exponential decay, so the record spins up on play and coasts to a halt on pause. Tunable with `--spin-lag`.
 - **Random song-change transitions:** 8 transition classes (`Crossfade`, `PixelDissolve`, `Iris`, `RecordSwap`, `FlipSide`, `SpinWhip`, `TonearmSweep`, `ScratchGlitch`) with a uniform `__init__(old_frame, new_frame, size)` + `__call__(t)->frame` interface. The loop detects an `art_key` change, freezes the spin, plays a random transition (`pick_transition` avoids immediate repeats) for `--transition-seconds` (default 1.0), then spins the new art up. `--no-transitions` restores the instant swap. PIL-only (no numpy). Preview all 8 locally with `--preview-transitions DIR` (writes filmstrips + GIFs, credential-free).
 - **Idle analog clock:** after `--idle-clock-seconds` (default 60) of nothing playing, the idle ghost ring (`render_idle`) fades over ~1s into a dim analog clock (`render_clock`, hour+minute hands, no font). `--no-idle-clock` disables it. The loop tracks `idle_since` (monotonic) and `last_idle_frame` (so resuming playback transitions out from whatever idle showed — ring or clock). **Uses the Pi's system timezone** — if the time is wrong, `sudo timedatectl set-timezone Europe/London`.
+
+## Spotify polling & rate limits (429 bans)
+
+Spotify rate-limits the Web API per `client_id` over a **rolling 30-second window**. Exact numbers are undocumented (community estimate ~180 req/min in *Development Mode*, stricter in practice), and **bans escalate** — a repeat offender can get a 429 with a multi-hour `Retry-After` (observed once: **27432s ≈ 7.6h**). The ban is server-side on the `client_id`, so **rebooting/restarting does not clear it**.
+
+**How the app stays under the limit (`poll_spotify` + `SpotifyClient`):**
+- **Non-blocking 429 backoff.** On a 429 the client records a `rate_limited_until` deadline and returns immediately (it does **not** `time.sleep(Retry-After)` — that used to freeze the poll thread, and the whole display, for the entire ban). Subsequent polls short-circuit (no request) until the deadline, then auto-recover. A 429 is logged: `Spotify rate-limited (429); backing off Ns`.
+- **Bounded 401 retry.** `get_currently_playing(refresh_retry=…)` refreshes + retries **once**; if still 401 it backs off 30s instead of recursing. The old unbounded `return self.get_currently_playing()` recursion was a request-storm risk (a prime way to *earn* a multi-hour ban).
+- **Adaptive + predictive interval (`compute_poll_delay`).** Poll the base cadence (`--poll-seconds`, 5s) only while playing; back off to `--idle-poll-seconds` (30s) when idle/paused. While playing, use `progress_ms`/`duration_ms` to wait roughly until the track boundary (floored at `--poll-seconds`, capped at `--idle-poll-seconds` so skips/seeks are still caught). Net: ~6–10× fewer requests for a mostly-idle display, *and* faster reaction at real song changes.
+
+**If album art is stuck for a long time:** check `journalctl -u spotify-matrix.service` for a `rate-limited (429)` line. If present, you're banned — wait out the `Retry-After` (the display keeps rendering the idle clock and recovers automatically). The long-term fix is **Extended Quota Mode** (request it in the Spotify developer dashboard — much higher limit).
 
 ## Local fixes to the script (differ from the initial commit)
 
