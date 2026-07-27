@@ -983,31 +983,49 @@ def poll_spotify(
         stop_event.wait(delay)
 
 
-def run_self_test() -> None:
-    """Check the parts that are easy to get silently backwards.
+SELF_TESTS: list[tuple[str, Any]] = []
 
-    No hardware, no credentials, no test framework - this project is a single
-    file, so the checks live next to the code they guard.
-    """
-    size = 32
 
-    # 1. The dot must reach the panel's top-right for every rotation, and it
-    # must be exactly one pixel. Getting this backwards is invisible until the
+def self_test(name: str):
+    """Register a named check runnable via --self-test [PATTERN]."""
+
+    def register(func):
+        SELF_TESTS.append((name, func))
+        return func
+
+    return register
+
+
+@self_test("status-dot-rotation")
+def _check_status_dot_rotation() -> None:
+    # The dot must reach the panel's top-right for every rotation, and it must
+    # be exactly one pixel. Getting this backwards is invisible until the
     # panel is on the wall.
+    size = 32
     for rotate in (0, 90, 180, 270):
         frame = draw_status_dot(Image.new("RGB", (size, size)), STATUS_OFFLINE, 0.25, rotate)
         shown = rotate_frame(frame, rotate)
-        lit = [xy for xy in ((x, y) for y in range(size) for x in range(size)) if shown.getpixel(xy) != (0, 0, 0)]
+        lit = [
+            xy
+            for xy in ((x, y) for y in range(size) for x in range(size))
+            if shown.getpixel(xy) != (0, 0, 0)
+        ]
         assert lit == [(size - 1, 0)], f"rotate={rotate} lit {lit}, expected top-right"
 
-    # 2. The pacing tiers, including the case that used to hurt: a skip early in
-    # a long track must not wait for the track boundary.
+
+@self_test("poll-pacing")
+def _check_poll_pacing() -> None:
+    # Including the case that used to hurt: a skip early in a long track must
+    # not wait for the track boundary.
     assert compute_poll_delay(True, 0.0, 2.0, 5.0) == HOT_POLL_SECONDS
     assert compute_poll_delay(False, 0.0, 2.0, 5.0) == HOT_POLL_SECONDS
     assert compute_poll_delay(True, 60.0, 2.0, 5.0) == 2.0
     assert compute_poll_delay(False, 60.0, 2.0, 5.0) == 5.0
 
-    # 3. The budget is a real ceiling: a full bucket hands out exactly its
+
+@self_test("request-budget")
+def _check_request_budget() -> None:
+    # The budget is a real ceiling: a full bucket hands out exactly its
     # capacity, then makes the caller wait.
     budget = RequestBudget(45.0)
     for _ in range(45):
@@ -1015,7 +1033,10 @@ def run_self_test() -> None:
         budget.consume()
     assert budget.wait_seconds() > 0.0
 
-    # 4. Rhythms stay in range and actually vary; the breathe never goes dark.
+
+@self_test("status-dot-rhythm")
+def _check_status_dot_rhythm() -> None:
+    # Rhythms stay in range and actually vary; the breathe never goes dark.
     for status in (STATUS_OFFLINE, STATUS_RATE_LIMITED):
         levels = [status_dot_level(status, tick / 20.0) for tick in range(100)]
         assert all(0.0 <= level <= 1.0 for level in levels), status
@@ -1024,7 +1045,33 @@ def run_self_test() -> None:
     assert min(status_dot_level(STATUS_OFFLINE, t / 20.0) for t in range(100)) == 0.0
     assert status_dot_level(STATUS_OK, 0.0) == 0.0
 
-    print("self-test: all checks passed")
+
+def run_self_test(pattern: str | None = None) -> None:
+    """Run the registered checks, optionally filtered by name substring.
+
+    No hardware, no credentials, no test framework - this project ships as a
+    couple of files, so the checks live next to the code they guard. The
+    registry (rather than one long function) exists so a single check can be
+    run and watched to fail while writing it.
+    """
+    selected = [(name, func) for name, func in SELF_TESTS if not pattern or pattern in name]
+    if not selected:
+        print(f"self-test: no check matches {pattern!r}", flush=True)
+        raise SystemExit(1)
+
+    failures = 0
+    for name, func in selected:
+        try:
+            func()
+        except AssertionError as exc:
+            failures += 1
+            print(f"FAIL {name}: {exc}", flush=True)
+        else:
+            print(f"ok   {name}", flush=True)
+
+    print(f"self-test: {len(selected) - failures}/{len(selected)} passed", flush=True)
+    if failures:
+        raise SystemExit(1)
 
 
 def build_display(args: argparse.Namespace) -> MatrixDisplay | MockDisplay:
@@ -1035,8 +1082,8 @@ def build_display(args: argparse.Namespace) -> MatrixDisplay | MockDisplay:
 
 def run(args: argparse.Namespace) -> None:
     # Modes that never touch Spotify run first, so they never need credentials.
-    if args.self_test:
-        run_self_test()
+    if args.self_test is not None:
+        run_self_test(args.self_test or None)
         return
 
     if args.preview_frames:
@@ -1356,7 +1403,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--preview-transitions", type=Path, help="Render sample song-change transition filmstrips and GIFs, then exit.")
     parser.add_argument("--auth-only", action="store_true", help="Authorize Spotify, cache the token, and exit without using the matrix.")
     parser.add_argument("--test-pattern", action="store_true", help="Show a bright moving color test pattern without using Spotify.")
-    parser.add_argument("--self-test", action="store_true", help="Check status-dot placement, poll pacing and the request budget, then exit.")
+    parser.add_argument(
+        "--self-test",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="PATTERN",
+        help="Run the built-in checks (optionally only those whose name contains PATTERN) and exit.",
+    )
     parser.add_argument("--once", action="store_true", help="Render one frame and exit.")
     parser.add_argument("--no-browser", action="store_true", help="Print the Spotify auth URL without trying to open a browser.")
     return parser
