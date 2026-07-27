@@ -1077,7 +1077,12 @@ def _check_font_metrics() -> None:
 def _check_font_legibility() -> None:
     # These pairs were confirmed to collide at 3px while building the mockups:
     # N read as M, V read as U, W read as U. They must differ as bitmaps.
-    for a, b in (("N", "H"), ("V", "W"), ("O", "0"), ("S", "5")):
+    #
+    # O and 0 are deliberately identical. At 3x5 the only way to distinguish
+    # them is an interior pixel, which turns the zero into an 8 - and every
+    # time on the commute screen starts with a zero. They never appear in an
+    # ambiguous position anyway: O only in "NO"/"NOW", 0 only in times.
+    for a, b in (("N", "H"), ("V", "W"), ("S", "5")):
         assert tinyfont.GLYPHS[a] != tinyfont.GLYPHS[b], f"{a} and {b} render identically"
 
 
