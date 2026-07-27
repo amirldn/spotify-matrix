@@ -636,6 +636,50 @@ def render_commute_hero(size: int, departure: trains.Departure, minutes: int) ->
     return frame
 
 
+COMMUTE_TIMELINE_ROWS = 3
+
+
+def render_commute_timeline(
+    size: int, departures: list[trains.Departure], now: datetime.datetime
+) -> Image.Image:
+    """Three services with times and status.
+
+    This fits only because the colon is dropped from the time and the
+    destination is omitted - every platform B service goes the same way, so the
+    destination is redundant and the pixels are not spare.
+    """
+    frame = Image.new("RGB", (size, size), (0, 0, 0))
+    draw = ImageDraw.Draw(frame)
+    platform = departures[0].platform if departures else ""
+    tinyfont.draw_text_centred(draw, 0, f"PLAT {platform}".strip(), COMMUTE_LABEL, size)
+    draw.line((2, 7, size - 3, 7), fill=(38, 40, 54))
+
+    y = 10
+    for index, departure in enumerate(sorted(departures, key=lambda d: d.expected)[:COMMUTE_TIMELINE_ROWS]):
+        if departure.cancelled:
+            colour, right = COMMUTE_RED, "CAN"
+        elif departure.delayed:
+            colour, right = COMMUTE_AMBER, "DLY"
+        else:
+            # The soonest service is highlighted; later ones recede.
+            colour = (COMMUTE_GREEN, COMMUTE_WHITE, COMMUTE_DIM)[min(index, 2)]
+            right = str(max(0, int((departure.expected - now).total_seconds() // 60)))
+        tinyfont.draw_text(draw, 1, y, _clock_label(departure.scheduled), colour)
+        tinyfont.draw_text(draw, size - 1 - tinyfont.text_width(right), y, right, colour)
+        y += 7
+    return frame
+
+
+def render_commute_empty(size: int, platform: str) -> Image.Image:
+    """Nothing running. Also what a line suspension looks like from here."""
+    frame = Image.new("RGB", (size, size), (0, 0, 0))
+    draw = ImageDraw.Draw(frame)
+    tinyfont.draw_text_centred(draw, 6, "NO", COMMUTE_DIM, size)
+    tinyfont.draw_text_centred(draw, 14, f"PLAT {platform}".strip(), COMMUTE_DIM, size)
+    tinyfont.draw_text_centred(draw, 22, "TRAINS", COMMUTE_DIM, size)
+    return frame
+
+
 # --- Idle status dot ---------------------------------------------------------
 # One LED in the panel's top-right corner so a stalled display explains itself:
 # red for "can't reach the network", blue for "Spotify is rate-limiting us,
@@ -1322,6 +1366,42 @@ def _check_hero_now() -> None:
     frame = render_commute_hero(32, _departure(8), 0)
     other = render_commute_hero(32, _departure(8), 6)
     assert frame.tobytes() != other.tobytes()
+
+
+@self_test("timeline-render")
+def _check_timeline_render() -> None:
+    rows = [_departure(4), _departure(9), _departure(16)]
+    frame = render_commute_timeline(32, rows, SELF_TEST_NOW)
+    assert frame.size == (32, 32)
+    lit = [(x, y) for y in range(32) for x in range(32) if frame.getpixel((x, y)) != (0, 0, 0)]
+    assert lit and max(y for _, y in lit) <= 31 and max(x for x, _ in lit) <= 31
+
+
+@self_test("timeline-states-differ")
+def _check_timeline_states_differ() -> None:
+    healthy = render_commute_timeline(32, [_departure(4), _departure(9)], SELF_TEST_NOW)
+    delayed = render_commute_timeline(32, [_departure(4, late=6), _departure(9)], SELF_TEST_NOW)
+    cancelled = render_commute_timeline(32, [_departure(4, cancelled=True), _departure(9)], SELF_TEST_NOW)
+    frames = {healthy.tobytes(), delayed.tobytes(), cancelled.tobytes()}
+    assert len(frames) == 3, "delay and cancellation must look different from each other"
+
+
+@self_test("timeline-cancel-is-red")
+def _check_timeline_cancel_is_red() -> None:
+    frame = render_commute_timeline(32, [_departure(4, cancelled=True)], SELF_TEST_NOW)
+    colours = {frame.getpixel((x, y)) for y in range(32) for x in range(32)}
+    assert COMMUTE_RED in colours, "a cancellation must be red"
+    healthy = render_commute_timeline(32, [_departure(4)], SELF_TEST_NOW)
+    healthy_colours = {healthy.getpixel((x, y)) for y in range(32) for x in range(32)}
+    assert COMMUTE_RED not in healthy_colours, "red leaked onto a healthy service"
+
+
+@self_test("empty-render")
+def _check_empty_render() -> None:
+    frame = render_commute_empty(32, "B")
+    lit = [(x, y) for y in range(32) for x in range(32) if frame.getpixel((x, y)) != (0, 0, 0)]
+    assert lit, "empty screen rendered blank"
+    assert max(x for x, _ in lit) <= 31
 
 
 def run_self_test(pattern: str | None = None) -> None:
