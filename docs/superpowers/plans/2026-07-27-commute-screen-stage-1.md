@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - **No new runtime dependencies.** `requirements.txt` must not change. Pillow and the stdlib only.
-- **Panel size is `min(rows, cols)`**, defaulting to 32. Never hardcode 32 in library code — take a `width`/`size` parameter. `--preview-commute` honours `--rows`/`--cols` like `--preview-frames` does.
+- **Panel size is `min(rows, cols)`**, defaulting to 32. Horizontal placement (centring, right-alignment) must derive from the passed `size`/`width`, never a literal 32. Vertical layout constants are tuned for a 32px panel and may be literals — the commute screens are designed for this panel, and making them fully responsive is YAGNI. `--preview-commute` honours `--rows`/`--cols` like `--preview-frames` does.
 - **The Mac has no system Pillow and no `.venv`.** Create a scratch venv once to run checks locally: `python3 -m venv /tmp/mvenv && /tmp/mvenv/bin/pip install pillow`. On the Pi use `.venv/bin/python`.
 - **Every glyph is exactly 5 rows tall.** Width varies per glyph and is derived from the glyph data, never assumed.
 - **Colour meanings are fixed:** red means "this train is not happening" (cancellation) and nothing else. Urgency tops out at amber.
@@ -581,15 +581,30 @@ Pure data and pure functions. No network — `RttClient` arrives in Stage 2.
   - `catchable(departures: list[Departure]) -> list[Departure]` — drops cancelled, sorts by `expected`
   - `minutes_to_leave(departure: Departure, now: datetime, walk_minutes: int) -> int`
   - `is_disrupted(departures: list[Departure]) -> bool`
+  - In `spotify_matrix.py`: `SELF_TEST_NOW` and
+    `sample_departure(base, minutes_out, *, cancelled=False, late=0) -> trains.Departure`,
+    the single departure builder shared by the checks and by `--preview-commute` in Task 7
 
 - [ ] **Step 1: Write the failing checks**
 
 Add `import trains` to `spotify_matrix.py` and append:
 
 ```python
-def _departure(minutes_out: int, *, cancelled: bool = False, late: int = 0) -> "trains.Departure":
-    """Build a Departure `minutes_out` from a fixed reference time."""
-    base = datetime.datetime(2026, 7, 27, 7, 30)
+SELF_TEST_NOW = datetime.datetime(2026, 7, 27, 7, 30)
+
+
+def sample_departure(
+    base: datetime.datetime,
+    minutes_out: int,
+    *,
+    cancelled: bool = False,
+    late: int = 0,
+) -> trains.Departure:
+    """Build a Departure `minutes_out` after `base`.
+
+    Shared by the checks and by --preview-commute so there is exactly one
+    place that knows how to fabricate a departure.
+    """
     scheduled = base + datetime.timedelta(minutes=minutes_out)
     return trains.Departure(
         scheduled=scheduled,
@@ -601,7 +616,8 @@ def _departure(minutes_out: int, *, cancelled: bool = False, late: int = 0) -> "
     )
 
 
-SELF_TEST_NOW = datetime.datetime(2026, 7, 27, 7, 30)
+def _departure(minutes_out: int, *, cancelled: bool = False, late: int = 0) -> trains.Departure:
+    return sample_departure(SELF_TEST_NOW, minutes_out, cancelled=cancelled, late=late)
 
 
 @self_test("trains-delayed")
@@ -997,7 +1013,8 @@ git commit -m "Add the timeline and empty commute screens"
 - Modify: `README.md`, `CLAUDE.md`
 
 **Interfaces:**
-- Consumes: Tasks 2–6
+- Consumes: Tasks 2–6, including `sample_departure()` and `SELF_TEST_NOW` from Task 4 —
+  `render_commute_previews` reuses that builder rather than defining its own
 - Produces:
   - `render_commute(size, departures, now, walk_minutes, platform="B", stale=False) -> Image.Image`
   - `render_commute_previews(directory: Path, size: int) -> None`
@@ -1100,15 +1117,7 @@ def render_commute_previews(directory: Path, size: int) -> None:
     now = datetime.datetime(2026, 7, 27, 7, 30)
 
     def at(minutes: int, *, cancelled: bool = False, late: int = 0) -> trains.Departure:
-        scheduled = now + datetime.timedelta(minutes=minutes)
-        return trains.Departure(
-            scheduled=scheduled,
-            expected=scheduled + datetime.timedelta(minutes=late),
-            platform="B",
-            cancelled=cancelled,
-            lateness=late,
-            destination="Paddington",
-        )
+        return sample_departure(now, minutes, cancelled=cancelled, late=late)
 
     scenes = {
         "commute-comfortable": ([at(16), at(21), at(28)], False),
