@@ -587,6 +587,55 @@ def render_clock(size: int, when: datetime.datetime) -> Image.Image:
     return frame
 
 
+# --- Commute screen ----------------------------------------------------------
+# A 32x32 panel cannot show a departure board, so it answers a different
+# question: not "when is the train" but "when do I leave", which is one number.
+COMMUTE_GREEN = (0, 215, 95)
+COMMUTE_AMBER = (255, 150, 0)
+COMMUTE_RED = (255, 45, 45)
+COMMUTE_LABEL = (140, 152, 195)
+COMMUTE_DIM = (72, 78, 98)
+COMMUTE_WHITE = (215, 220, 240)
+
+COMMUTE_COMFORTABLE_MINUTES = 5
+
+
+def hero_colour(minutes: int) -> tuple[int, int, int]:
+    """Green with time in hand, amber once it's time to move.
+
+    Never red: red is reserved for cancellations, so that it always means "this
+    train is not happening" rather than "hurry up".
+    """
+    return COMMUTE_GREEN if minutes >= COMMUTE_COMFORTABLE_MINUTES else COMMUTE_AMBER
+
+
+def _clock_label(when: datetime.datetime) -> str:
+    # No colon: dropping it is what makes a time fit in four characters, which
+    # is what makes three of them fit on the timeline.
+    return when.strftime("%H%M")
+
+
+def render_commute_hero(size: int, departure: trains.Departure, minutes: int) -> Image.Image:
+    frame = Image.new("RGB", (size, size), (0, 0, 0))
+    draw = ImageDraw.Draw(frame)
+    colour = hero_colour(minutes)
+    footer = f"{_clock_label(departure.expected)} {departure.platform}"
+
+    if minutes <= 0:
+        tinyfont.draw_text_centred(draw, 3, "LEAVE", COMMUTE_LABEL, size)
+        # Drawn twice a pixel apart: at 5px tall this is the only way to give
+        # the words the weight the digits would have had.
+        tinyfont.draw_text_centred(draw, 12, "NOW", colour, size)
+        tinyfont.draw_text_centred(draw, 13, "NOW", colour, size)
+        tinyfont.draw_text_centred(draw, 24, footer, COMMUTE_WHITE, size)
+        return frame
+
+    tinyfont.draw_text_centred(draw, 1, "LEAVE IN", COMMUTE_LABEL, size)
+    tinyfont.draw_big_number(draw, minutes, 8, colour, size)
+    tinyfont.draw_text_centred(draw, 26, footer, COMMUTE_DIM, size)
+    return frame
+
+
 # --- Idle status dot ---------------------------------------------------------
 # One LED in the panel's top-right corner so a stalled display explains itself:
 # red for "can't reach the network", blue for "Spotify is rate-limiting us,
@@ -1234,6 +1283,38 @@ def _check_trains_disrupted() -> None:
     # Trouble further down the list is not a reason to abandon the hero screen.
     assert not trains.is_disrupted([_departure(5), _departure(12, cancelled=True)])
     assert not trains.is_disrupted([])
+
+
+@self_test("hero-colour")
+def _check_hero_colour() -> None:
+    # Red is reserved for cancellations, so urgency tops out at amber.
+    assert hero_colour(9) == COMMUTE_GREEN
+    assert hero_colour(5) == COMMUTE_GREEN
+    assert hero_colour(4) == COMMUTE_AMBER
+    assert hero_colour(1) == COMMUTE_AMBER
+    assert hero_colour(0) == COMMUTE_AMBER
+    assert COMMUTE_RED not in (hero_colour(m) for m in range(0, 30))
+
+
+@self_test("hero-render")
+def _check_hero_render() -> None:
+    frame = render_commute_hero(32, _departure(12), 4)
+    assert frame.size == (32, 32)
+    lit = [(x, y) for y in range(32) for x in range(32) if frame.getpixel((x, y)) != (0, 0, 0)]
+    assert lit, "hero screen rendered blank"
+    assert max(y for _, y in lit) <= 31 and max(x for x, _ in lit) <= 31
+    # The countdown digit must dominate: most lit pixels sit in the middle band.
+    middle = [xy for xy in lit if 8 <= xy[1] <= 24]
+    assert len(middle) > len(lit) // 2, "hero number is not the dominant element"
+
+
+@self_test("hero-now")
+def _check_hero_now() -> None:
+    # At zero the digits are replaced by words - "LEAVE IN 0" is a worse
+    # instruction than "LEAVE NOW".
+    frame = render_commute_hero(32, _departure(8), 0)
+    other = render_commute_hero(32, _departure(8), 6)
+    assert frame.tobytes() != other.tobytes()
 
 
 def run_self_test(pattern: str | None = None) -> None:
