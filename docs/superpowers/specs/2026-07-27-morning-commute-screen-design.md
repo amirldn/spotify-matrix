@@ -222,6 +222,27 @@ demand. Requires the RTT token.
 Poll thread, `RequestBudget` wiring, `CommuteSchedule`, render-loop branch and
 alternation.
 
+**Seam inherited from Stage 1 — do not miss it.** `trains.on_platform()` is
+implemented and tested, but *nothing in the render path calls it*.
+`render_commute()` takes a `platform` argument used only for display text, not
+for filtering. So the integration code is solely responsible for calling
+`on_platform()` before handing departures to `render_commute()`. Forget it and
+services from both platforms compete in the hero and timeline logic, with
+nothing to signal that filtering was skipped — the screen would confidently
+count down to a train leaving from the other platform. Wire it explicitly and
+add a check that proves a platform A service never reaches the screen.
+
+Two smaller Stage 1 assumptions that live data will test:
+
+- `minutes_to_leave` assumes `now` and `departure.expected` share a clock.
+  Stage 1 fixtures are naive datetimes from one base, so this is untested
+  against the Pi's system timezone versus RTT's returned times. The idle clock
+  already has a timezone gotcha documented in `CLAUDE.md`; this is the same
+  class of bug.
+- `Departure.destination` is populated but never read, so nothing pins its
+  expected shape. Confirm RTT's payload maps onto it cleanly before relying
+  on it.
+
 *Done when:* the panel switches to the commute screen by itself on a weekday
 morning and alternates correctly while music plays.
 

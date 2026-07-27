@@ -1167,7 +1167,7 @@ Run: `/tmp/mvenv/bin/python spotify_matrix.py --self-test commute`
 Expected: `self-test: 3/3 passed`.
 
 Run: `/tmp/mvenv/bin/python spotify_matrix.py --self-test`
-Expected: `self-test: 28/28 passed`.
+Expected: `self-test: 29/29 passed`.
 
 Render and inspect at 8× nearest-neighbour:
 
@@ -1232,7 +1232,7 @@ git commit -m "Add the commute screen dispatcher, stale dimming and --preview-co
 
 ## Stage 1 exit criteria
 
-- `python spotify_matrix.py --self-test` reports 28/28 passing.
+- `python spotify_matrix.py --self-test` reports 29/29 passing (28 from this plan, plus `commute-cancelled-beats-delayed` added during Task 7 to close a deferred coverage gap).
 - `--preview-commute` writes seven PNGs covering every state, with no RTT token and no network.
 - On the Pi: `sudo -E .venv/bin/python spotify_matrix.py --rows 32 --cols 32 --rotate 90 --preview-commute /tmp/c` succeeds, and the frames are legible at wall-mounted distance.
 - No change to `requirements.txt`, and no change to the running service's behaviour — nothing calls `render_commute()` from the render loop until Stage 3.
