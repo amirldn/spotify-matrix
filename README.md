@@ -80,12 +80,26 @@ sudo -E .venv/bin/python spotify_matrix.py --rows 32 --cols 32 \
 # one PNG frame of the current state
 python spotify_matrix.py --rows 32 --cols 32 --mock-output /tmp/frame.png --once
 
-# four spinning-disk sample frames at your panel resolution
-python spotify_matrix.py --rows 32 --cols 32 --preview-frames /tmp/preview
+# spinning-disk sample frames, the idle screen, and status-LED filmstrips
+# (pass the same --rotate you run with, so the LED shows in the right corner)
+python spotify_matrix.py --rows 32 --cols 32 --rotate 90 --preview-frames /tmp/preview
 
 # filmstrips + animated GIFs of all 8 song-change transitions
 python spotify_matrix.py --preview-transitions /tmp/transitions
+
+# assert status-LED placement, poll pacing and the request budget
+python spotify_matrix.py --self-test
 ```
+
+### Status LED
+
+When nothing is playing, a single pixel in the panel's top-right corner reports why the display is quiet: **red, pulsing once a second** means the network is unreachable, and **blue, slowly breathing** means Spotify is rate-limiting us and the app is waiting out the ban. Nothing lights when all is well, and the LED never appears over album art. `--no-status-dot` turns it off.
+
+### Latency and rate limits
+
+`--poll-seconds` (default 2) is the worst-case delay before a **skip** reaches the panel; `--idle-poll-seconds` (default 5) is the worst-case delay before **pressing play** does. Right after any change the app polls once a second for 15 seconds, so rapid skipping keeps up.
+
+Request volume is capped separately by `--max-requests-per-minute` (default 45), enforced with a token bucket. Because that ceiling is independent of the poll cadence, the cadences above can chase latency without risking a Spotify 429 ban.
 
 Transition behaviour is tunable: `--transition-seconds` (default 1.0) sets the duration, and `--no-transitions` swaps art instantly instead. `--spin-lag` (default 0.5) controls how quickly the record spins up on play and coasts down on pause. `--idle-clock-seconds` (default 60) sets how long nothing must be playing before the dim analog clock appears; `--no-idle-clock` keeps the ghost record instead.
 

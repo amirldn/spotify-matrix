@@ -18,7 +18,7 @@ Uses the Web API, **not** the browser-only Web Playback SDK. First run does OAut
 - **`LocalCallbackServer`** — throwaway `HTTPServer` on the redirect URI to catch the OAuth code, with CSRF `state` check.
 - **Display abstraction** — `MatrixDisplay` (real hardware, lazy-imports `rgbmatrix`) vs `MockDisplay` (writes a PNG). Same `show()`/`clear()` interface.
 - **Rendering** — `render_record` (fit → rotate → circular mask → label + center hole), plus `render_idle`, `render_test_pattern`, `demo_album_art`.
-- **Concurrency** — a daemon poll thread updates `SharedPlaybackState` behind a `Lock` every `--poll-seconds`; the main thread renders at `--fps`. Image download happens **outside** the lock so slow network never stalls the animation.
+- **Concurrency** — a daemon poll thread updates `SharedPlaybackState` (art + `status`) behind a `Lock`; the main thread renders at `--fps`. Image download happens **outside** the lock so slow network never stalls the animation.
 
 ## My hardware
 
@@ -64,11 +64,13 @@ sudo -E .venv/bin/python spotify_matrix.py \
 - `--gpio-slowdown` (default 2) — bump `4`→`5` if the image is glitchy/noisy. Signal integrity on the Zero 2 W is the most common culprit, not PWM timing.
 - `--brightness` (default 65)
 - `--rpm` (spin speed, default 20), `--fps` (default 120)
-- `--poll-seconds` (default 5) — base Spotify poll cadence **while playing**. `--idle-poll-seconds` (default 30) — slow cadence when idle/paused, and the cap on the playing cadence (see *Rate-limit-aware polling* below).
+- `--poll-seconds` (default 2) — poll cadence while playing = worst-case lag before a **skip** appears. `--idle-poll-seconds` (default 5) — cadence when idle/paused = worst-case lag before **pressing play** appears. `--max-requests-per-minute` (default 45) — the hard ceiling; see *Spotify polling & rate limits* below.
+- `--no-status-dot` — hide the idle corner LED (red = network unreachable, blue = rate-limited).
 
 ### Testing without hardware
+- `--self-test` — assert status-dot placement (for all four `--rotate` values), poll pacing and the request budget. No creds, no hardware, no test framework. **Run this after touching polling or the dot.**
 - `--mock-output frame.png --once` — render one frame to a PNG.
-- `--preview-frames dir/` — four sample spinning-disk frames.
+- `--preview-frames dir/` — sample spinning-disk frames, `idle.png`, and `status-offline.png` / `status-rate-limited.png` filmstrips. Pass `--rotate` too: the status strips are rotated the way the panel sees them, so they show which physical corner the dot lands in.
 - `--test-pattern` — moving color bars on real hardware.
 - `--auth-only` — do the OAuth flow and cache the token, then exit.
 
@@ -106,9 +108,29 @@ Spotify rate-limits the Web API per `client_id` over a **rolling 30-second windo
 **How the app stays under the limit (`poll_spotify` + `SpotifyClient`):**
 - **Non-blocking 429 backoff.** On a 429 the client records a `rate_limited_until` deadline and returns immediately (it does **not** `time.sleep(Retry-After)` — that used to freeze the poll thread, and the whole display, for the entire ban). Subsequent polls short-circuit (no request) until the deadline, then auto-recover. A 429 is logged: `Spotify rate-limited (429); backing off Ns`.
 - **Bounded 401 retry.** `get_currently_playing(refresh_retry=…)` refreshes + retries **once**; if still 401 it backs off 30s instead of recursing. The old unbounded `return self.get_currently_playing()` recursion was a request-storm risk (a prime way to *earn* a multi-hour ban).
-- **Adaptive + predictive interval (`compute_poll_delay`).** Poll the base cadence (`--poll-seconds`, 5s) only while playing; back off to `--idle-poll-seconds` (30s) when idle/paused. While playing, use `progress_ms`/`duration_ms` to wait roughly until the track boundary (floored at `--poll-seconds`, capped at `--idle-poll-seconds` so skips/seeks are still caught). Net: ~6–10× fewer requests for a mostly-idle display, *and* faster reaction at real song changes.
+- **Token-bucket ceiling (`RequestBudget`).** This is the actual rate-limit control. It refills at `--max-requests-per-minute` (default 45) and the poll thread takes a token before every request. Volume is capped no matter what the pacing logic asks for, so a bug that tightens the cadence to zero still can't earn a ban. During a 429 back-off no request is made, so no token is spent either.
+- **Tiered cadence (`compute_poll_delay`).** Three tiers: `HOT_POLL_SECONDS` (1s) for `HOT_WINDOW_SECONDS` (15s) after any observed change, else `--poll-seconds` (2s) while playing, else `--idle-poll-seconds` (5s). The hot tier exists because skipping is bursty — the first skip costs 2s, every skip after it lands in ~1s.
 
-**If album art is stuck for a long time:** check `journalctl -u spotify-matrix.service` for a `rate-limited (429)` line. If present, you're banned — wait out the `Retry-After` (the display keeps rendering the idle clock and recovers automatically). The long-term fix is **Extended Quota Mode** (request it in the Spotify developer dashboard — much higher limit).
+> **Superseded design — don't reintroduce it.** Commit `384e262` made polling *predictive*: while playing it waited until the track boundary computed from `progress_ms`/`duration_ms`. That is optimal for a track ending by itself and pessimal for a manual skip — it assumes the art can't change before the boundary, which is exactly wrong when you hit next. Both "starting playback takes 30s to show" and "skips take 30s to show" came from this. It was removed in favour of the bucket, which holds volume down *without* trading away latency.
+
+**If album art is stuck for a long time:** look at the **idle corner LED** first — blue means rate-limited, red means the network is unreachable. Then confirm in `journalctl -u spotify-matrix.service` (`rate-limited (429)` or `unreachable (…)`). If banned, wait out the `Retry-After`; the display keeps rendering the idle clock and recovers automatically. The long-term fix is **Extended Quota Mode** (request it in the Spotify developer dashboard — much higher limit).
+
+## Idle status LED
+
+A single pixel in the panel's **physical top-right**, drawn only on idle screens (ghost ring + clock) so it never sits over album art:
+
+| State | Colour | Rhythm | Meaning |
+|---|---|---|---|
+| `STATUS_OFFLINE` | red `(210,35,35)` | 1 Hz pulse, 35% duty | Can't reach Spotify at all — check WiFi/router |
+| `STATUS_RATE_LIMITED` | blue `(45,110,255)` | 4 s breathe, never fully dark | 429 back-off; wait it out |
+
+Rhythm carries as much of the signal as colour does — one pixel's hue is hard to read across a dark room, and the motion also stops it looking like a dead pixel.
+
+**Detection:** offline = `OFFLINE_STRIKES` (2) consecutive `OSError`s from the poll. That's a clean connectivity probe because `http_request` turns HTTP *error responses* into `HttpResponse` objects, so the only exceptions that escape are transport-level. Rate-limited = `SpotifyClient.backoff_remaining() > 0`. Offline wins if somehow both.
+
+**GOTCHA — rotation.** `MatrixDisplay.show()` applies `--rotate` *after* rendering, so a pixel drawn at the rendered frame's top-right does **not** reach the panel's top-right. `status_dot_position()` inverts the rotation to pick the right source corner — at our `--rotate 90` the dot is drawn at the frame's top-**left**. `--self-test` round-trips all four rotations; run it if you touch this.
+
+**Behaviour change this required:** after `OFFLINE_IDLE_SECONDS` (60) of consecutive failures the poller clears playback state, so the display drops to idle instead of spinning stale art forever. Without that the red dot would be unreachable in its main scenario (WiFi dying mid-playback). Outages shorter than 60s still ride through with the record spinning.
 
 ## Local fixes to the script (differ from the initial commit)
 

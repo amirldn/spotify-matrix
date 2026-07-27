@@ -36,6 +36,23 @@ TOKEN_URL = "https://accounts.spotify.com/api/token"
 CURRENTLY_PLAYING_URL = "https://api.spotify.com/v1/me/player/currently-playing"
 SCOPE = "user-read-currently-playing"
 
+# Poll pacing. Track changes are bursty - someone who skips once usually skips
+# again within seconds - so any observed change drops the poller into a brief
+# "hot" tier where a follow-up skip shows up almost immediately. These describe
+# behaviour rather than taste, so they stay constants instead of CLI flags.
+HOT_POLL_SECONDS = 1.0
+HOT_WINDOW_SECONDS = 15.0
+
+# Network failure handling. Two strikes before we call it offline (a single
+# blip shouldn't light the alarm), and a minute of grace before we stop
+# believing the last known playback state.
+OFFLINE_STRIKES = 2
+OFFLINE_IDLE_SECONDS = 60.0
+
+STATUS_OK = "ok"
+STATUS_OFFLINE = "offline"
+STATUS_RATE_LIMITED = "rate_limited"
+
 
 @dataclass
 class PlaybackArt:
@@ -50,6 +67,9 @@ class SharedPlaybackState:
     image_url: str | None = None
     image: Image.Image | None = None
     is_playing: bool = False
+    # How the poll thread is faring, for the idle status dot: one of
+    # STATUS_OK / STATUS_OFFLINE / STATUS_RATE_LIMITED.
+    status: str = STATUS_OK
 
 
 @dataclass
@@ -95,6 +115,40 @@ def raise_http_error(response: HttpResponse, context: str) -> None:
     raise RuntimeError(f"{context} failed with HTTP {response.status}: {body}")
 
 
+class RequestBudget:
+    """Token bucket capping how many Spotify requests we make per minute.
+
+    This is the real rate-limit control. A slow poll cadence is only an
+    *indirect* limit - it couples request volume to how long the panel takes to
+    notice you pressed play. A bucket is a direct one: volume is capped no
+    matter what the pacing logic asks for, which is exactly what lets the
+    pacing be aggressive. It also fails safe, since a bug that tightens the
+    cadence to zero still cannot exceed the ceiling.
+    """
+
+    def __init__(self, per_minute: float) -> None:
+        self.capacity = per_minute
+        self.rate = per_minute / 60.0
+        self.tokens = per_minute
+        self.updated = time.monotonic()
+
+    def _refill(self) -> None:
+        now = time.monotonic()
+        self.tokens = min(self.capacity, self.tokens + (now - self.updated) * self.rate)
+        self.updated = now
+
+    def wait_seconds(self) -> float:
+        """Seconds until a token is available (0 if one is free right now)."""
+        self._refill()
+        if self.tokens >= 1.0:
+            return 0.0
+        return (1.0 - self.tokens) / self.rate
+
+    def consume(self) -> None:
+        self._refill()
+        self.tokens = max(0.0, self.tokens - 1.0)
+
+
 class SpotifyClient:
     def __init__(
         self,
@@ -113,6 +167,14 @@ class SpotifyClient:
         # Monotonic-ish wall-clock deadline: while now < this, we're honoring a
         # Spotify 429 back-off and skip polling entirely (see get_currently_playing).
         self.rate_limited_until = 0.0
+
+    def backoff_remaining(self) -> float:
+        """Seconds left on a 429 back-off (0 when we're free to poll).
+
+        The poll loop uses this to skip both the request and its budget token
+        during a ban, and to light the rate-limited status dot.
+        """
+        return max(0.0, self.rate_limited_until - time.time())
 
     def get_currently_playing(self, refresh_retry: bool = True) -> dict[str, Any] | None:
         # Honor a prior 429 without blocking the poll thread: during the back-off
@@ -522,6 +584,74 @@ def render_clock(size: int, when: datetime.datetime) -> Image.Image:
     return frame
 
 
+# --- Idle status dot ---------------------------------------------------------
+# One LED in the panel's top-right corner so a stalled display explains itself:
+# red for "can't reach the network", blue for "Spotify is rate-limiting us,
+# waiting it out". Colour alone is a weak signal on a single pixel across a dark
+# room, so each state gets its own rhythm too - an urgent 1Hz pulse versus a
+# patient 4s breathe. The motion also distinguishes a status dot from the dead
+# pixel a lone steady LED would look like.
+_STATUS_DOT_STYLE = {
+    STATUS_OFFLINE: ((210, 35, 35), 1.0, 0.35),
+    STATUS_RATE_LIMITED: ((45, 110, 255), 4.0, None),
+}
+
+# The dot must land in the top-right of what the *panel* shows, and
+# MatrixDisplay.show() rotates the frame afterwards. So pick the source corner
+# that rotation carries to (size-1, 0). Easy to get backwards - hence the
+# rotation round-trip check in --self-test.
+_STATUS_DOT_CORNER = {
+    0: lambda size: (size - 1, 0),
+    90: lambda size: (0, 0),
+    180: lambda size: (0, size - 1),
+    270: lambda size: (size - 1, size - 1),
+}
+
+
+def status_dot_position(size: int, rotate: int) -> tuple[int, int]:
+    return _STATUS_DOT_CORNER[rotate % 360](size)
+
+
+def status_dot_level(status: str, elapsed: float) -> float:
+    """Brightness envelope in [0, 1] for the given status at time `elapsed`.
+
+    Driven off a monotonic clock rather than a frame counter, so the rhythm is
+    the same whether we're rendering at 120fps or limping.
+    """
+    style = _STATUS_DOT_STYLE.get(status)
+    if style is None:
+        return 0.0
+
+    _, period, duty = style
+    phase = (elapsed % period) / period
+    if duty is None:
+        # Breathe: a full sine swing that never fully extinguishes, so the dot
+        # stays readable as "present but waiting".
+        return 0.25 + 0.75 * (0.5 - 0.5 * math.cos(2 * math.pi * phase))
+    if phase >= duty:
+        return 0.0
+    # Pulse: a short lit burst with soft edges, dark the rest of the period.
+    return math.sin(math.pi * phase / duty)
+
+
+def draw_status_dot(
+    frame: Image.Image, status: str, elapsed: float, rotate: int
+) -> Image.Image:
+    level = status_dot_level(status, elapsed)
+    if level <= 0.0:
+        return frame
+
+    color, _, _ = _STATUS_DOT_STYLE[status]
+    # Copy: idle frames are cached and reused across renders, so painting in
+    # place would permanently stain them.
+    dotted = frame.copy()
+    dotted.putpixel(
+        status_dot_position(frame.size[0], rotate),
+        tuple(round(channel * level) for channel in color),
+    )
+    return dotted
+
+
 def render_test_pattern(size: int, offset: int) -> Image.Image:
     frame = Image.new("RGB", (size, size), (0, 0, 0))
     draw = ImageDraw.Draw(frame)
@@ -708,32 +838,34 @@ def pick_transition(last: type | None) -> type:
 
 
 def compute_poll_delay(
-    playback: dict[str, Any] | None,
+    is_playing: bool,
+    seconds_since_change: float,
     poll_seconds: float,
     idle_poll_seconds: float,
 ) -> float:
     """Decide how long to wait before the next Spotify poll.
 
-    Adaptive + predictive, to keep request volume (and rate-limit risk) low:
-    - Nothing playing or paused -> slow idle cadence: the display is showing the
-      clock or a frozen record, so nothing changes in the meantime.
-    - Playing -> the response tells us how much of the track is left, and the art
-      cannot change until it ends. So wait roughly until the track boundary,
-      floored at poll_seconds (don't hammer) and capped at idle_poll_seconds (so a
-      manual skip or seek is still noticed within that window).
+    Three tiers, chosen by playback state and how recently anything changed:
+
+    - Hot: something changed in the last HOT_WINDOW_SECONDS. Track changes are
+      bursty - skipping once usually means skipping again in a moment - so poll
+      hard for a short window. The first skip costs poll_seconds; every skip
+      after it lands in about a second.
+    - Playing: the base cadence. This is the ceiling on how long a skip can go
+      unnoticed.
+    - Idle or paused: the slow cadence, which is also how long pressing play can
+      go unnoticed.
+
+    Deliberately *not* predictive. An earlier version waited until the track
+    boundary computed from progress_ms/duration_ms, which is optimal for a track
+    ending by itself and pessimal for a manual skip: it assumes the art cannot
+    change before the boundary, which is exactly wrong when the user intervenes.
+    Request volume is now held down by RequestBudget instead, which does not
+    trade away latency to do it.
     """
-    if not playback or not playback.get("is_playing"):
-        return idle_poll_seconds
-
-    item = playback.get("item") or {}
-    duration_ms = item.get("duration_ms")
-    progress_ms = playback.get("progress_ms")
-    if not duration_ms or progress_ms is None:
-        return poll_seconds  # local files / missing timing: fall back to base cadence
-
-    remaining_s = max(0.0, (duration_ms - progress_ms) / 1000.0)
-    # +1s so we land just after the track flips, not a beat before it.
-    return min(max(remaining_s + 1.0, poll_seconds), idle_poll_seconds)
+    if seconds_since_change < HOT_WINDOW_SECONDS:
+        return HOT_POLL_SECONDS
+    return poll_seconds if is_playing else idle_poll_seconds
 
 
 def poll_spotify(
@@ -743,18 +875,46 @@ def poll_spotify(
     stop_event: threading.Event,
     poll_seconds: float,
     idle_poll_seconds: float,
+    budget: RequestBudget,
 ) -> None:
     last_status: str | None = None
+    last_change = 0.0            # monotonic time we last saw the playback change
+    failures = 0                 # consecutive network-level failures
+    offline_since: float | None = None
 
     while not stop_event.is_set():
+        backoff = spotify.backoff_remaining()
+        if backoff > 0:
+            # Rate-limited: there's no request to make, so spend no token
+            # either. Re-check often enough that the dot clears promptly once
+            # the window expires.
+            with state_lock:
+                state.status = STATUS_RATE_LIMITED
+            stop_event.wait(min(backoff, idle_poll_seconds))
+            continue
+
+        wait = budget.wait_seconds()
+        if wait > 0:
+            stop_event.wait(wait)
+            continue
+
+        budget.consume()
         delay = poll_seconds
         try:
             playback = spotify.get_currently_playing()
             art = playback_art_from_response(playback)
+            failures = 0
+            offline_since = None
+
+            # A 429 answered by the request we just made shows up here as a
+            # back-off deadline; reflect it now so the dot doesn't blink
+            # through "ok" for one cycle before turning blue.
+            health = STATUS_RATE_LIMITED if spotify.backoff_remaining() > 0 else STATUS_OK
 
             if art:
                 with state_lock:
                     needs_download = art.key != state.art_key or art.image_url != state.image_url
+                    changed = art.key != state.art_key or art.is_playing != state.is_playing
 
                 image = download_image(art.image_url) if needs_download else None
 
@@ -762,27 +922,109 @@ def poll_spotify(
                     state.art_key = art.key
                     state.image_url = art.image_url
                     state.is_playing = art.is_playing
+                    state.status = health
                     if image is not None:
                         state.image = image
 
                 status = f"art found, is_playing={art.is_playing}"
             else:
                 with state_lock:
+                    changed = state.art_key is not None or state.is_playing
                     state.art_key = None
                     state.image_url = None
                     state.image = None
                     state.is_playing = False
+                    state.status = health
                 status = "no currently playing item"
+
+            if changed:
+                last_change = time.monotonic()
 
             if status != last_status:
                 print(f"Spotify: {status}", flush=True)
                 last_status = status
 
-            delay = compute_poll_delay(playback, poll_seconds, idle_poll_seconds)
+            delay = compute_poll_delay(
+                is_playing=bool(art and art.is_playing),
+                seconds_since_change=time.monotonic() - last_change,
+                poll_seconds=poll_seconds,
+                idle_poll_seconds=idle_poll_seconds,
+            )
+        except OSError as exc:
+            # http_request turns HTTP error *responses* into HttpResponse
+            # objects, so an OSError escaping it (URLError, socket timeout, DNS
+            # failure) genuinely means we couldn't reach Spotify at all.
+            failures += 1
+            now = time.monotonic()
+            if offline_since is None:
+                offline_since = now
+
+            with state_lock:
+                if failures >= OFFLINE_STRIKES:
+                    state.status = STATUS_OFFLINE
+                if now - offline_since >= OFFLINE_IDLE_SECONDS:
+                    # A sustained outage means we no longer know what's playing.
+                    # Drop to the idle screen - which is where the red dot
+                    # lives - instead of spinning stale art indefinitely.
+                    state.art_key = None
+                    state.image_url = None
+                    state.image = None
+                    state.is_playing = False
+
+            status = f"unreachable ({exc})"
+            if status != last_status:
+                print(f"Spotify: {status}", flush=True)
+                last_status = status
+            delay = idle_poll_seconds
         except Exception as exc:
             print(f"Spotify poll failed: {exc}", flush=True)
+            delay = idle_poll_seconds
 
         stop_event.wait(delay)
+
+
+def run_self_test() -> None:
+    """Check the parts that are easy to get silently backwards.
+
+    No hardware, no credentials, no test framework - this project is a single
+    file, so the checks live next to the code they guard.
+    """
+    size = 32
+
+    # 1. The dot must reach the panel's top-right for every rotation, and it
+    # must be exactly one pixel. Getting this backwards is invisible until the
+    # panel is on the wall.
+    for rotate in (0, 90, 180, 270):
+        frame = draw_status_dot(Image.new("RGB", (size, size)), STATUS_OFFLINE, 0.25, rotate)
+        shown = rotate_frame(frame, rotate)
+        lit = [xy for xy in ((x, y) for y in range(size) for x in range(size)) if shown.getpixel(xy) != (0, 0, 0)]
+        assert lit == [(size - 1, 0)], f"rotate={rotate} lit {lit}, expected top-right"
+
+    # 2. The pacing tiers, including the case that used to hurt: a skip early in
+    # a long track must not wait for the track boundary.
+    assert compute_poll_delay(True, 0.0, 2.0, 5.0) == HOT_POLL_SECONDS
+    assert compute_poll_delay(False, 0.0, 2.0, 5.0) == HOT_POLL_SECONDS
+    assert compute_poll_delay(True, 60.0, 2.0, 5.0) == 2.0
+    assert compute_poll_delay(False, 60.0, 2.0, 5.0) == 5.0
+
+    # 3. The budget is a real ceiling: a full bucket hands out exactly its
+    # capacity, then makes the caller wait.
+    budget = RequestBudget(45.0)
+    for _ in range(45):
+        assert budget.wait_seconds() == 0.0
+        budget.consume()
+    assert budget.wait_seconds() > 0.0
+
+    # 4. Rhythms stay in range and actually vary; the breathe never goes dark.
+    for status in (STATUS_OFFLINE, STATUS_RATE_LIMITED):
+        levels = [status_dot_level(status, tick / 20.0) for tick in range(100)]
+        assert all(0.0 <= level <= 1.0 for level in levels), status
+        assert max(levels) > 0.9 and len(set(levels)) > 10, status
+    assert min(status_dot_level(STATUS_RATE_LIMITED, t / 20.0) for t in range(100)) > 0.2
+    assert min(status_dot_level(STATUS_OFFLINE, t / 20.0) for t in range(100)) == 0.0
+    assert status_dot_level(STATUS_OK, 0.0) == 0.0
+
+    print("self-test: all checks passed")
 
 
 def build_display(args: argparse.Namespace) -> MatrixDisplay | MockDisplay:
@@ -793,8 +1035,12 @@ def build_display(args: argparse.Namespace) -> MatrixDisplay | MockDisplay:
 
 def run(args: argparse.Namespace) -> None:
     # Modes that never touch Spotify run first, so they never need credentials.
+    if args.self_test:
+        run_self_test()
+        return
+
     if args.preview_frames:
-        render_preview_frames(args.preview_frames, min(args.rows, args.cols))
+        render_preview_frames(args.preview_frames, min(args.rows, args.cols), args.rotate)
         return
 
     if args.preview_transitions:
@@ -862,6 +1108,7 @@ def run(args: argparse.Namespace) -> None:
             stop_event,
             args.poll_seconds,
             args.idle_poll_seconds,
+            RequestBudget(args.max_requests_per_minute),
         ),
         daemon=True,
     )
@@ -887,6 +1134,7 @@ def run(args: argparse.Namespace) -> None:
                 new_image = playback_state.image
                 new_key = playback_state.art_key
                 is_playing = playback_state.is_playing
+                status = playback_state.status
 
             now = time.monotonic()
             delta = now - last_frame
@@ -948,7 +1196,11 @@ def run(args: argparse.Namespace) -> None:
                         image = Image.blend(idle, clock, min(1.0, elapsed - args.idle_clock_seconds))
                     else:
                         image = idle
+                    # Stash the dot-free frame: transitions out of idle should
+                    # start from the screen itself, not a mid-blink of the dot.
                     last_idle_frame = image
+                    if not args.no_status_dot:
+                        image = draw_status_dot(image, status, now, args.rotate)
 
             display.show(image)
 
@@ -972,12 +1224,30 @@ def positive_float(value: str) -> float:
     return parsed
 
 
-def render_preview_frames(directory: Path, size: int) -> None:
+def render_preview_frames(directory: Path, size: int, rotate: int = 0) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     art = demo_album_art(max(size * 3, 96))
     for index, angle in enumerate((0, 45, 90, 135)):
         render_record(art, angle, size).save(directory / f"album-disk-{index:02d}.png")
     render_idle(size).save(directory / "idle.png")
+    render_status_previews(directory, size, rotate)
+
+
+def render_status_previews(directory: Path, size: int, rotate: int) -> None:
+    """Filmstrips of the idle clock with each status dot, one frame per phase.
+
+    Rotation is applied here the way MatrixDisplay does it, so the strips show
+    where the dot lands on the *panel* rather than in render space.
+    """
+    clock = render_clock(size, datetime.datetime(2026, 1, 1, 10, 9))
+    frames = 6
+    for status in (STATUS_OFFLINE, STATUS_RATE_LIMITED):
+        _, period, _ = _STATUS_DOT_STYLE[status]
+        strip = Image.new("RGB", (size * frames + (frames - 1), size), (30, 30, 30))
+        for index in range(frames):
+            dotted = draw_status_dot(clock, status, index * period / frames, rotate)
+            strip.paste(rotate_frame(dotted, rotate), (index * (size + 1), 0))
+        strip.save(directory / f"status-{status.replace('_', '-')}.png")
 
 
 def render_transition_previews(directory: Path, size: int = 32) -> None:
@@ -1040,16 +1310,30 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--poll-seconds",
         type=positive_float,
-        default=5.0,
-        help="Base poll cadence while a track is playing (floor for predictive polling).",
+        default=2.0,
+        help="Poll cadence while a track is playing. This is the worst-case lag "
+        "before a skip shows up on the panel.",
     )
     parser.add_argument(
         "--idle-poll-seconds",
         type=positive_float,
-        default=30.0,
-        help="Slow poll cadence when idle or paused, and the cap on the playing cadence. "
-        "Also the max lag before a resume/skip/seek is noticed. Raise it to cut API "
-        "requests further; lower it for snappier response.",
+        default=5.0,
+        help="Poll cadence when idle or paused. This is the worst-case lag before "
+        "pressing play shows up on the panel.",
+    )
+    parser.add_argument(
+        "--max-requests-per-minute",
+        type=positive_float,
+        default=45.0,
+        help="Hard ceiling on Spotify API requests, enforced by a token bucket. "
+        "This - not a slow poll cadence - is what keeps us clear of a 429 ban, so "
+        "the cadences above are free to be snappy.",
+    )
+    parser.add_argument(
+        "--no-status-dot",
+        action="store_true",
+        help="Hide the idle corner LED that shows red when the network is "
+        "unreachable and blue while Spotify is rate-limiting us.",
     )
     parser.add_argument(
         "--rotate",
@@ -1072,6 +1356,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--preview-transitions", type=Path, help="Render sample song-change transition filmstrips and GIFs, then exit.")
     parser.add_argument("--auth-only", action="store_true", help="Authorize Spotify, cache the token, and exit without using the matrix.")
     parser.add_argument("--test-pattern", action="store_true", help="Show a bright moving color test pattern without using Spotify.")
+    parser.add_argument("--self-test", action="store_true", help="Check status-dot placement, poll pacing and the request budget, then exit.")
     parser.add_argument("--once", action="store_true", help="Render one frame and exit.")
     parser.add_argument("--no-browser", action="store_true", help="Print the Spotify auth URL without trying to open a browser.")
     return parser
