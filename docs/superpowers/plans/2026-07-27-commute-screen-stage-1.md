@@ -803,9 +803,15 @@ def _check_hero_render() -> None:
     lit = [(x, y) for y in range(32) for x in range(32) if frame.getpixel((x, y)) != (0, 0, 0)]
     assert lit, "hero screen rendered blank"
     assert max(y for _, y in lit) <= 31 and max(x for x, _ in lit) <= 31
-    # The countdown digit must dominate: most lit pixels sit in the middle band.
-    middle = [xy for xy in lit if 8 <= xy[1] <= 24]
-    assert len(middle) > len(lit) // 2, "hero number is not the dominant element"
+    # Rows 8-24 hold the countdown and nothing else. Assert it is drawn with
+    # the large seven-segment digits rather than the 5px font: a glyph that
+    # tall cannot come from the bitmap font. Counting pixels would be a bad
+    # proxy - a single narrow digit like "4" legitimately lights fewer pixels
+    # than the label and footer combined.
+    rows = sorted({y for _, y in lit if 8 <= y <= 24})
+    assert rows, "no countdown drawn"
+    span = rows[-1] - rows[0] + 1
+    assert span >= 10, f"countdown spans only {span} rows; expected large digits"
 
 
 @self_test("hero-now")
