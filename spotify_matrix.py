@@ -680,6 +680,63 @@ def render_commute_empty(size: int, platform: str) -> Image.Image:
     return frame
 
 
+COMMUTE_STALE_FACTOR = 0.35
+
+
+def render_commute(
+    size: int,
+    departures: list[trains.Departure],
+    now: datetime.datetime,
+    walk_minutes: int,
+    platform: str = "B",
+    stale: bool = False,
+) -> Image.Image:
+    """Pick the screen that tells the truth about the current situation.
+
+    When `stale` the whole frame is dimmed. The caller is responsible for
+    freezing the clock it passes as `now`, so the countdown stops advancing
+    rather than confidently counting down from data we no longer trust.
+    """
+    if not departures:
+        frame = render_commute_empty(size, platform)
+    elif trains.is_disrupted(departures):
+        frame = render_commute_timeline(size, departures, now)
+    else:
+        options = trains.catchable(departures)
+        if not options:
+            frame = render_commute_empty(size, platform)
+        else:
+            target = options[0]
+            frame = render_commute_hero(
+                size, target, trains.minutes_to_leave(target, now, walk_minutes)
+            )
+
+    if stale:
+        frame = Image.eval(frame, lambda channel: int(channel * COMMUTE_STALE_FACTOR))
+    return frame
+
+
+def render_commute_previews(directory: Path, size: int) -> None:
+    """Every commute state as a PNG. No token, no network, no hardware."""
+    directory.mkdir(parents=True, exist_ok=True)
+    now = datetime.datetime(2026, 7, 27, 7, 30)
+
+    def at(minutes: int, *, cancelled: bool = False, late: int = 0) -> trains.Departure:
+        return sample_departure(now, minutes, cancelled=cancelled, late=late)
+
+    scenes = {
+        "commute-comfortable": ([at(16), at(21), at(28)], False),
+        "commute-hurry": ([at(11), at(18), at(25)], False),
+        "commute-now": ([at(8), at(15), at(22)], False),
+        "commute-delayed": ([at(10, late=6), at(18), at(25)], False),
+        "commute-cancelled": ([at(10, cancelled=True), at(18), at(25)], False),
+        "commute-empty": ([], False),
+        "commute-stale": ([at(16), at(21), at(28)], True),
+    }
+    for name, (departures, stale) in scenes.items():
+        render_commute(size, departures, now, 8, stale=stale).save(directory / f"{name}.png")
+
+
 # --- Idle status dot ---------------------------------------------------------
 # One LED in the panel's top-right corner so a stalled display explains itself:
 # red for "can't reach the network", blue for "Spotify is rate-limiting us,
@@ -1404,6 +1461,57 @@ def _check_empty_render() -> None:
     assert max(x for x, _ in lit) <= 31
 
 
+@self_test("commute-dispatch")
+def _check_commute_dispatch() -> None:
+    healthy = [_departure(12), _departure(19)]
+    disrupted = [_departure(12, cancelled=True), _departure(19)]
+    hero = render_commute(32, healthy, SELF_TEST_NOW, 8)
+    timeline = render_commute(32, disrupted, SELF_TEST_NOW, 8)
+    empty = render_commute(32, [], SELF_TEST_NOW, 8)
+    assert len({hero.tobytes(), timeline.tobytes(), empty.tobytes()}) == 3
+
+    # A hero countdown must match what the rules say, so the screen and the
+    # data can never disagree.
+    expected = trains.minutes_to_leave(healthy[0], SELF_TEST_NOW, 8)
+    assert hero.tobytes() == render_commute_hero(32, healthy[0], expected).tobytes()
+
+
+@self_test("commute-cancelled-goes-to-timeline")
+def _check_commute_cancelled_goes_to_timeline() -> None:
+    # A cancelled next train must never be counted down to. Showing the
+    # timeline is how the rider gets their actual options instead.
+    rows = [_departure(6, cancelled=True), _departure(20)]
+    frame = render_commute(32, rows, SELF_TEST_NOW, 8)
+    # Next one is cancelled, so this is the timeline, not a countdown to a
+    # train that isn't running.
+    assert frame.tobytes() == render_commute_timeline(32, rows, SELF_TEST_NOW).tobytes()
+
+
+@self_test("commute-cancelled-beats-delayed")
+def _check_commute_cancelled_beats_delayed() -> None:
+    # A departure that is both cancelled and delayed must read as cancelled -
+    # red always wins over amber, never the other way round.
+    frame = render_commute_timeline(32, [_departure(6, cancelled=True, late=6)], SELF_TEST_NOW)
+    colours = {frame.getpixel((x, y)) for y in range(32) for x in range(32)}
+    assert COMMUTE_RED in colours, "cancelled+delayed must render as cancelled (red)"
+    assert COMMUTE_AMBER not in colours, "cancelled+delayed must not also render as delayed (amber)"
+
+
+@self_test("commute-stale-is-dimmer")
+def _check_commute_stale_is_dimmer() -> None:
+    rows = [_departure(12), _departure(19)]
+    fresh = render_commute(32, rows, SELF_TEST_NOW, 8)
+    stale = render_commute(32, rows, SELF_TEST_NOW, 8, stale=True)
+    assert fresh.tobytes() != stale.tobytes()
+
+    def brightness(frame):
+        return sum(sum(frame.getpixel((x, y))) for y in range(32) for x in range(32))
+
+    # A countdown from stale data keeps ticking and looks authoritative.
+    # Dimming is what makes the fault visible.
+    assert brightness(stale) < brightness(fresh) * 0.6
+
+
 def run_self_test(pattern: str | None = None) -> None:
     """Run the registered checks, optionally filtered by name substring.
 
@@ -1450,6 +1558,10 @@ def run(args: argparse.Namespace) -> None:
 
     if args.preview_transitions:
         render_transition_previews(args.preview_transitions)
+        return
+
+    if args.preview_commute:
+        render_commute_previews(args.preview_commute, min(args.rows, args.cols))
         return
 
     size = min(args.rows, args.cols)
@@ -1759,6 +1871,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mock-output", type=Path, help="Write the current frame PNG instead of using RGB matrix hardware.")
     parser.add_argument("--preview-frames", type=Path, help="Render sample spinning-album-art disk frames and exit.")
     parser.add_argument("--preview-transitions", type=Path, help="Render sample song-change transition filmstrips and GIFs, then exit.")
+    parser.add_argument(
+        "--preview-commute",
+        type=Path,
+        help="Render every commute screen state to PNGs and exit. No RTT token needed.",
+    )
     parser.add_argument("--auth-only", action="store_true", help="Authorize Spotify, cache the token, and exit without using the matrix.")
     parser.add_argument("--test-pattern", action="store_true", help="Show a bright moving color test pattern without using Spotify.")
     parser.add_argument(

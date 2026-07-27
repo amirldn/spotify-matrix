@@ -71,6 +71,7 @@ sudo -E .venv/bin/python spotify_matrix.py \
 - `--self-test` — assert status-dot placement (for all four `--rotate` values), poll pacing and the request budget. No creds, no hardware, no test framework. **Run this after touching polling or the dot.**
 - `--mock-output frame.png --once` — render one frame to a PNG.
 - `--preview-frames dir/` — sample spinning-disk frames, `idle.png`, and `status-offline.png` / `status-rate-limited.png` filmstrips. Pass `--rotate` too: the status strips are rotated the way the panel sees them, so they show which physical corner the dot lands in.
+- `--preview-commute dir/` — every commute screen state (comfortable, hurry, now, delayed, cancelled, empty, stale). Credential-free; Stage 1 of the commute feature renders from hand-built `Departure` objects, so this works before any RTT token exists.
 - `--test-pattern` — moving color bars on real hardware.
 - `--auth-only` — do the OAuth flow and cache the token, then exit.
 
@@ -100,6 +101,22 @@ Verified: survives reboot and auto-starts.
 - **Turntable spin model:** the main loop eases an angular `spin_velocity` toward a target (full speed when playing, 0 when paused) via exponential decay, so the record spins up on play and coasts to a halt on pause. Tunable with `--spin-lag`.
 - **Random song-change transitions:** 8 transition classes (`Crossfade`, `PixelDissolve`, `Iris`, `RecordSwap`, `FlipSide`, `SpinWhip`, `TonearmSweep`, `ScratchGlitch`) with a uniform `__init__(old_frame, new_frame, size)` + `__call__(t)->frame` interface. The loop detects an `art_key` change, freezes the spin, plays a random transition (`pick_transition` avoids immediate repeats) for `--transition-seconds` (default 1.0), then spins the new art up. `--no-transitions` restores the instant swap. PIL-only (no numpy). Preview all 8 locally with `--preview-transitions DIR` (writes filmstrips + GIFs, credential-free).
 - **Idle analog clock:** after `--idle-clock-seconds` (default 60) of nothing playing, the idle ghost ring (`render_idle`) fades over ~1s into a dim analog clock (`render_clock`, hour+minute hands, no font). `--no-idle-clock` disables it. The loop tracks `idle_since` (monotonic) and `last_idle_frame` (so resuming playback transitions out from whatever idle showed — ring or clock). **Uses the Pi's system timezone** — if the time is wrong, `sudo timedatectl set-timezone Europe/London`.
+
+## Commute screen (Stage 1: rendering)
+
+`tinyfont.py` (font + seven-segment digits) and `trains.py` (`Departure` model
++ pure selection rules) back `render_commute()`. Stage 1 has no network code.
+
+**Why the font is variable-width:** at a fixed 3px, `N` renders identically to
+`M`, and `M`/`W` collapse into `N`/`U`. `N` gets 4 columns for its diagonal and
+`W` gets 5. Confirmed by rendering, not assumed — see `--self-test font`.
+
+**Why `1` is special-cased in the seven-segment digits:** a true seven-segment
+`1` lights the two right-hand bars, so `11` reads as four evenly spaced posts.
+It is drawn as a single stem with a narrow advance instead.
+
+**Red means cancelled, never "hurry".** Urgency tops out at amber so red always
+carries exactly one meaning.
 
 ## Spotify polling & rate limits (429 bans)
 

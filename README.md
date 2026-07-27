@@ -87,6 +87,9 @@ python spotify_matrix.py --rows 32 --cols 32 --rotate 90 --preview-frames /tmp/p
 # filmstrips + animated GIFs of all 8 song-change transitions
 python spotify_matrix.py --preview-transitions /tmp/transitions
 
+# every morning-commute screen state (no RTT token needed)
+python spotify_matrix.py --rows 32 --cols 32 --preview-commute /tmp/commute
+
 # assert status-LED placement, poll pacing and the request budget
 python spotify_matrix.py --self-test
 ```
