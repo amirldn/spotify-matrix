@@ -25,6 +25,7 @@ from typing import Any
 from PIL import Image, ImageChops, ImageDraw, ImageOps
 
 import tinyfont
+import trains
 
 try:
     from dotenv import load_dotenv
@@ -1152,6 +1153,87 @@ def _check_seg_centred() -> None:
     assert tinyfont.big_number_width(8, 11, 2, 3) == 11
     assert tinyfont.big_number_width(11, 11, 2, 3) == 2 + 3 + 2
     assert tinyfont.big_number_width(18, 11, 2, 3) == 2 + 3 + 11
+
+
+SELF_TEST_NOW = datetime.datetime(2026, 7, 27, 7, 30)
+
+
+def sample_departure(
+    base: datetime.datetime,
+    minutes_out: int,
+    *,
+    cancelled: bool = False,
+    late: int = 0,
+) -> trains.Departure:
+    """Build a Departure `minutes_out` after `base`.
+
+    Shared by the checks and by --preview-commute so there is exactly one
+    place that knows how to fabricate a departure.
+    """
+    scheduled = base + datetime.timedelta(minutes=minutes_out)
+    return trains.Departure(
+        scheduled=scheduled,
+        expected=scheduled + datetime.timedelta(minutes=late),
+        platform="B",
+        cancelled=cancelled,
+        lateness=late,
+        destination="Paddington",
+    )
+
+
+def _departure(minutes_out: int, *, cancelled: bool = False, late: int = 0) -> trains.Departure:
+    return sample_departure(SELF_TEST_NOW, minutes_out, cancelled=cancelled, late=late)
+
+
+@self_test("trains-delayed")
+def _check_trains_delayed() -> None:
+    assert not _departure(10).delayed
+    assert not _departure(10, late=1).delayed        # under the threshold
+    assert _departure(10, late=2).delayed            # at the threshold
+    assert _departure(10, late=9).delayed
+
+
+@self_test("trains-platform-filter")
+def _check_trains_platform_filter() -> None:
+    b_train = _departure(5)
+    a_train = _departure(6)
+    a_train.platform = "A"
+    unknown = _departure(7)
+    unknown.platform = ""
+    picked = trains.on_platform([b_train, a_train, unknown], "B")
+    # A service with no platform is excluded, not assumed to be ours: the
+    # screen under-reporting is far better than it misleading.
+    assert picked == [b_train], picked
+
+
+@self_test("trains-catchable")
+def _check_trains_catchable() -> None:
+    late_one = _departure(12)
+    cancelled = _departure(4, cancelled=True)
+    soon = _departure(8)
+    got = trains.catchable([late_one, cancelled, soon])
+    # Cancelled dropped, remainder sorted by when they actually leave.
+    assert got == [soon, late_one], got
+
+
+@self_test("trains-leave-minutes")
+def _check_trains_leave_minutes() -> None:
+    # 12 minutes away, 8 minute walk -> leave in 4.
+    assert trains.minutes_to_leave(_departure(12), SELF_TEST_NOW, 8) == 4
+    # A delay pushes the number UP; it must never report the scheduled time.
+    assert trains.minutes_to_leave(_departure(12, late=5), SELF_TEST_NOW, 8) == 9
+    # Already too late clamps to zero rather than going negative.
+    assert trains.minutes_to_leave(_departure(3), SELF_TEST_NOW, 8) == 0
+
+
+@self_test("trains-disrupted")
+def _check_trains_disrupted() -> None:
+    assert not trains.is_disrupted([_departure(5), _departure(12)])
+    assert trains.is_disrupted([_departure(5, late=4), _departure(12)])
+    assert trains.is_disrupted([_departure(5, cancelled=True), _departure(12)])
+    # Trouble further down the list is not a reason to abandon the hero screen.
+    assert not trains.is_disrupted([_departure(5), _departure(12, cancelled=True)])
+    assert not trains.is_disrupted([])
 
 
 def run_self_test(pattern: str | None = None) -> None:
