@@ -1107,6 +1107,53 @@ def _check_font_centred() -> None:
     assert xs == {15}, xs
 
 
+@self_test("seg-one-is-a-stem")
+def _check_seg_one_is_a_stem() -> None:
+    # A literal seven-segment '1' lights the two right-hand bars, so at w=11
+    # "11" reads as four evenly spaced posts. '1' is special-cased to one stem
+    # with a narrow advance; this check is why.
+    assert tinyfont.seven_seg_width("1", 11, 2) == 2
+    assert tinyfont.seven_seg_width("8", 11, 2) == 11
+
+    frame = Image.new("RGB", (32, 32), (0, 0, 0))
+    draw = ImageDraw.Draw(frame)
+    tinyfont.draw_big_number(draw, 11, 0, (255, 255, 255), 32)
+    columns = sorted({x for y in range(32) for x in range(32) if frame.getpixel((x, y)) != (0, 0, 0)})
+    # Two stems of thickness 2, separated by the 3px gap.
+    assert len(columns) == 4, columns
+    assert columns[1] - columns[0] == 1 and columns[3] - columns[2] == 1, columns
+    assert columns[2] - columns[1] == 4, columns
+
+
+@self_test("seg-digits-differ")
+def _check_seg_digits_differ() -> None:
+    rendered = {}
+    for digit in "0123456789":
+        frame = Image.new("RGB", (16, 20), (0, 0, 0))
+        tinyfont.draw_seven_seg(ImageDraw.Draw(frame), 0, 0, 11, 17, digit, (255, 255, 255))
+        rendered[digit] = frame.tobytes()
+    assert len(set(rendered.values())) == 10, "two digits render identically"
+
+
+@self_test("seg-bounds")
+def _check_seg_bounds() -> None:
+    # Nothing may spill outside the requested box, or it will clip on-panel.
+    frame = Image.new("RGB", (32, 32), (0, 0, 0))
+    tinyfont.draw_seven_seg(ImageDraw.Draw(frame), 4, 6, 11, 17, "8", (255, 255, 255))
+    lit = [(x, y) for y in range(32) for x in range(32) if frame.getpixel((x, y)) != (0, 0, 0)]
+    assert lit, "nothing drawn"
+    assert min(x for x, _ in lit) >= 4 and max(x for x, _ in lit) <= 4 + 11 - 1
+    assert min(y for _, y in lit) >= 6 and max(y for _, y in lit) <= 6 + 17 - 1
+
+
+@self_test("seg-centred")
+def _check_seg_centred() -> None:
+    # Centring must account for the narrow '1', or numbers containing 1 sit off-centre.
+    assert tinyfont.big_number_width(8, 11, 2, 3) == 11
+    assert tinyfont.big_number_width(11, 11, 2, 3) == 2 + 3 + 2
+    assert tinyfont.big_number_width(18, 11, 2, 3) == 2 + 3 + 11
+
+
 def run_self_test(pattern: str | None = None) -> None:
     """Run the registered checks, optionally filtered by name substring.
 
