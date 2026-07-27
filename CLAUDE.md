@@ -102,10 +102,29 @@ Verified: survives reboot and auto-starts.
 - **Random song-change transitions:** 8 transition classes (`Crossfade`, `PixelDissolve`, `Iris`, `RecordSwap`, `FlipSide`, `SpinWhip`, `TonearmSweep`, `ScratchGlitch`) with a uniform `__init__(old_frame, new_frame, size)` + `__call__(t)->frame` interface. The loop detects an `art_key` change, freezes the spin, plays a random transition (`pick_transition` avoids immediate repeats) for `--transition-seconds` (default 1.0), then spins the new art up. `--no-transitions` restores the instant swap. PIL-only (no numpy). Preview all 8 locally with `--preview-transitions DIR` (writes filmstrips + GIFs, credential-free).
 - **Idle analog clock:** after `--idle-clock-seconds` (default 60) of nothing playing, the idle ghost ring (`render_idle`) fades over ~1s into a dim analog clock (`render_clock`, hour+minute hands, no font). `--no-idle-clock` disables it. The loop tracks `idle_since` (monotonic) and `last_idle_frame` (so resuming playback transitions out from whatever idle showed — ring or clock). **Uses the Pi's system timezone** — if the time is wrong, `sudo timedatectl set-timezone Europe/London`.
 
-## Commute screen (Stage 1: rendering)
+## Commute screen
 
-`tinyfont.py` (font + seven-segment digits) and `trains.py` (`Departure` model
-+ pure selection rules) back `render_commute()`. Stage 1 has no network code.
+Shows when to leave for an Elizabeth line train from Custom House platform B,
+on weekday mornings. `tinyfont.py` (font + seven-segment digits) and
+`trains.py` (`Departure` model, pure selection rules, `RttClient`) back
+`render_commute()`.
+
+**Window:** weekdays 06:30-09:30 by default (`--commute-days`,
+`--commute-start`, `--commute-end`). Idle inside the window shows trains
+instead of the clock; while music plays the panel alternates 20s record / 8s
+trains with a cross-fade. Outside the window nothing changes. `--no-commute`
+disables it, and it stays off entirely if `RTT_TOKEN` is unset - the panel is a
+music display first.
+
+**A second poll thread** mirrors `poll_spotify`, dormant outside the window,
+with its own `RequestBudget` (`--rtt-requests-per-minute`, default 20 against a
+30/min free tier). 60s cadence, tightening to 20s within 5 minutes of a
+departure. Filtering to one platform happens in the poll thread so exactly one
+place knows about it.
+
+**Check it end to end:** `--commute-once` fetches live, prints the departures
+it parsed, and renders a single frame. That is the fastest way to tell a
+rendering problem from a data problem.
 
 **Why the font is variable-width:** at a fixed 3px, `N` renders identically to
 `M`, and `M`/`W` collapse into `N`/`U`. `N` gets 4 columns for its diagonal and

@@ -1,0 +1,491 @@
+{
+ "query": {
+  "location": {
+   "namespace": "gb-nr",
+   "description": "Custom House",
+   "shortCodes": [
+    "CUS"
+   ],
+   "longCodes": [
+    "CUSTMHS"
+   ]
+  },
+  "timeFrom": "2026-07-27T17:34:17+01:00",
+  "timeTo": "2026-07-27T18:34:17+01:00",
+  "detailed": false
+ },
+ "services": [
+  {
+   "temporalData": {
+    "arrival": {
+     "scheduleInternal": "2026-07-27T17:36:00",
+     "scheduleAdvertised": "2026-07-27T17:36:00",
+     "realtimeForecast": "2026-07-27T17:36:00",
+     "isCancelled": false
+    },
+    "departure": {
+     "scheduleInternal": "2026-07-27T17:36:00",
+     "scheduleAdvertised": "2026-07-27T17:36:00",
+     "realtimeForecast": "2026-07-27T17:36:00",
+     "isCancelled": false
+    },
+    "scheduledCallType": "ADVERTISED_OPEN",
+    "realtimeCallType": "ADVERTISED_OPEN",
+    "displayAs": "CALL",
+    "isInterpolated": false
+   },
+   "locationMetadata": {
+    "platform": {
+     "planned": "A",
+     "forecast": "A"
+    },
+    "numberOfVehicles": 9,
+    "allocationIndex": 0
+   },
+   "scheduleMetadata": {
+    "uniqueIdentity": "gb-nr:C37663:2026-07-27",
+    "namespace": "gb-nr",
+    "identity": "C37663",
+    "departureDate": "2026-07-27",
+    "operator": {
+     "code": "XR",
+     "name": "Elizabeth Line"
+    },
+    "modeType": "TRAIN",
+    "inPassengerService": true
+   },
+   "origin": [
+    {
+     "location": {
+      "description": "London Paddington",
+      "longCodes": [
+       "PADTLL"
+      ]
+     },
+     "temporalData": {
+      "scheduleInternal": "2026-07-27T17:16:00",
+      "scheduleAdvertised": "2026-07-27T17:16:00"
+     }
+    }
+   ],
+   "destination": [
+    {
+     "location": {
+      "description": "Abbey Wood",
+      "longCodes": [
+       "ABWDXR"
+      ]
+     },
+     "temporalData": {
+      "scheduleInternal": "2026-07-27T17:44:00",
+      "scheduleAdvertised": "2026-07-27T17:46:00"
+     }
+    }
+   ]
+  },
+  {
+   "temporalData": {
+    "arrival": {
+     "scheduleInternal": "2026-07-27T17:38:00",
+     "scheduleAdvertised": "2026-07-27T17:38:00",
+     "realtimeForecast": "2026-07-27T17:38:00",
+     "isCancelled": false
+    },
+    "departure": {
+     "scheduleInternal": "2026-07-27T17:38:00",
+     "scheduleAdvertised": "2026-07-27T17:38:00",
+     "realtimeForecast": "2026-07-27T17:38:00",
+     "isCancelled": false
+    },
+    "scheduledCallType": "ADVERTISED_OPEN",
+    "realtimeCallType": "ADVERTISED_OPEN",
+    "displayAs": "CALL",
+    "isInterpolated": false
+   },
+   "locationMetadata": {
+    "platform": {
+     "planned": "B",
+     "forecast": "B"
+    },
+    "numberOfVehicles": 9,
+    "allocationIndex": 0
+   },
+   "scheduleMetadata": {
+    "uniqueIdentity": "gb-nr:C37154:2026-07-27",
+    "namespace": "gb-nr",
+    "identity": "C37154",
+    "departureDate": "2026-07-27",
+    "operator": {
+     "code": "XR",
+     "name": "Elizabeth Line"
+    },
+    "modeType": "TRAIN",
+    "inPassengerService": true
+   },
+   "origin": [
+    {
+     "location": {
+      "description": "Abbey Wood",
+      "longCodes": [
+       "ABWDXR"
+      ]
+     },
+     "temporalData": {
+      "scheduleInternal": "2026-07-27T17:31:00",
+      "scheduleAdvertised": "2026-07-27T17:31:00"
+     }
+    }
+   ],
+   "destination": [
+    {
+     "location": {
+      "description": "Maidenhead",
+      "longCodes": [
+       "MDNHEAD"
+      ]
+     },
+     "temporalData": {
+      "scheduleInternal": "2026-07-27T18:43:00",
+      "scheduleAdvertised": "2026-07-27T18:44:00"
+     }
+    }
+   ]
+  },
+  {
+   "temporalData": {
+    "arrival": {
+     "scheduleInternal": "2026-07-27T17:41:00",
+     "scheduleAdvertised": "2026-07-27T17:41:00",
+     "realtimeForecast": "2026-07-27T17:41:00",
+     "isCancelled": false
+    },
+    "departure": {
+     "scheduleInternal": "2026-07-27T17:41:00",
+     "scheduleAdvertised": "2026-07-27T17:41:00",
+     "realtimeForecast": "2026-07-27T17:41:00",
+     "isCancelled": false
+    },
+    "scheduledCallType": "ADVERTISED_OPEN",
+    "realtimeCallType": "ADVERTISED_OPEN",
+    "displayAs": "CALL",
+    "isInterpolated": false
+   },
+   "locationMetadata": {
+    "platform": {
+     "planned": "A",
+     "forecast": "A"
+    },
+    "numberOfVehicles": 9,
+    "allocationIndex": 0
+   },
+   "scheduleMetadata": {
+    "uniqueIdentity": "gb-nr:C37671:2026-07-27",
+    "namespace": "gb-nr",
+    "identity": "C37671",
+    "departureDate": "2026-07-27",
+    "operator": {
+     "code": "XR",
+     "name": "Elizabeth Line"
+    },
+    "modeType": "TRAIN",
+    "inPassengerService": true
+   },
+   "origin": [
+    {
+     "location": {
+      "description": "Heathrow Airport Terminal 4",
+      "longCodes": [
+       "HTRWTM4"
+      ]
+     },
+     "temporalData": {
+      "scheduleInternal": "2026-07-27T16:45:00",
+      "scheduleAdvertised": "2026-07-27T16:45:00"
+     }
+    }
+   ],
+   "destination": [
+    {
+     "location": {
+      "description": "Abbey Wood",
+      "longCodes": [
+       "ABWDXR"
+      ]
+     },
+     "temporalData": {
+      "scheduleInternal": "2026-07-27T17:49:00",
+      "scheduleAdvertised": "2026-07-27T17:51:00"
+     }
+    }
+   ]
+  },
+  {
+   "temporalData": {
+    "arrival": {
+     "scheduleInternal": "2026-07-27T17:43:00",
+     "scheduleAdvertised": "2026-07-27T17:43:00",
+     "realtimeForecast": "2026-07-27T17:43:00",
+     "isCancelled": false
+    },
+    "departure": {
+     "scheduleInternal": "2026-07-27T17:43:00",
+     "scheduleAdvertised": "2026-07-27T17:43:00",
+     "realtimeForecast": "2026-07-27T17:43:00",
+     "isCancelled": false
+    },
+    "scheduledCallType": "ADVERTISED_OPEN",
+    "realtimeCallType": "ADVERTISED_OPEN",
+    "displayAs": "CALL",
+    "isInterpolated": false
+   },
+   "locationMetadata": {
+    "platform": {
+     "planned": "B",
+     "forecast": "B"
+    },
+    "numberOfVehicles": 9,
+    "allocationIndex": 0
+   },
+   "scheduleMetadata": {
+    "uniqueIdentity": "gb-nr:C38593:2026-07-27",
+    "namespace": "gb-nr",
+    "identity": "C38593",
+    "departureDate": "2026-07-27",
+    "operator": {
+     "code": "XR",
+     "name": "Elizabeth Line"
+    },
+    "modeType": "TRAIN",
+    "inPassengerService": true
+   },
+   "origin": [
+    {
+     "location": {
+      "description": "Abbey Wood",
+      "longCodes": [
+       "ABWDXR"
+      ]
+     },
+     "temporalData": {
+      "scheduleInternal": "2026-07-27T17:36:00",
+      "scheduleAdvertised": "2026-07-27T17:36:00"
+     }
+    }
+   ],
+   "destination": [
+    {
+     "location": {
+      "description": "London Paddington",
+      "longCodes": [
+       "PADTLL"
+      ]
+     },
+     "temporalData": {
+      "scheduleInternal": "2026-07-27T18:03:00",
+      "scheduleAdvertised": "2026-07-27T18:06:00"
+     }
+    }
+   ]
+  },
+  {
+   "temporalData": {
+    "arrival": {
+     "scheduleInternal": "2026-07-27T17:46:00",
+     "scheduleAdvertised": "2026-07-27T17:46:00",
+     "realtimeForecast": "2026-07-27T17:46:00",
+     "isCancelled": false
+    },
+    "departure": {
+     "scheduleInternal": "2026-07-27T17:46:00",
+     "scheduleAdvertised": "2026-07-27T17:46:00",
+     "realtimeForecast": "2026-07-27T17:46:00",
+     "isCancelled": false
+    },
+    "scheduledCallType": "ADVERTISED_OPEN",
+    "realtimeCallType": "ADVERTISED_OPEN",
+    "displayAs": "CALL",
+    "isInterpolated": false
+   },
+   "locationMetadata": {
+    "platform": {
+     "planned": "A",
+     "forecast": "A"
+    },
+    "numberOfVehicles": 9,
+    "allocationIndex": 0
+   },
+   "scheduleMetadata": {
+    "uniqueIdentity": "gb-nr:C37681:2026-07-27",
+    "namespace": "gb-nr",
+    "identity": "C37681",
+    "departureDate": "2026-07-27",
+    "operator": {
+     "code": "XR",
+     "name": "Elizabeth Line"
+    },
+    "modeType": "TRAIN",
+    "inPassengerService": true
+   },
+   "origin": [
+    {
+     "location": {
+      "description": "Reading",
+      "longCodes": [
+       "RDNGSTN"
+      ]
+     },
+     "temporalData": {
+      "scheduleInternal": "2026-07-27T16:31:00",
+      "scheduleAdvertised": "2026-07-27T16:31:00"
+     }
+    }
+   ],
+   "destination": [
+    {
+     "location": {
+      "description": "Abbey Wood",
+      "longCodes": [
+       "ABWDXR"
+      ]
+     },
+     "temporalData": {
+      "scheduleInternal": "2026-07-27T17:54:00",
+      "scheduleAdvertised": "2026-07-27T17:56:00"
+     }
+    }
+   ]
+  },
+  {
+   "temporalData": {
+    "arrival": {
+     "scheduleInternal": "2026-07-27T17:48:00",
+     "scheduleAdvertised": "2026-07-27T17:48:00",
+     "realtimeForecast": "2026-07-27T17:48:00",
+     "isCancelled": false
+    },
+    "departure": {
+     "scheduleInternal": "2026-07-27T17:48:00",
+     "scheduleAdvertised": "2026-07-27T17:48:00",
+     "realtimeForecast": "2026-07-27T17:48:00",
+     "isCancelled": false
+    },
+    "scheduledCallType": "ADVERTISED_OPEN",
+    "realtimeCallType": "ADVERTISED_OPEN",
+    "displayAs": "CALL",
+    "isInterpolated": false
+   },
+   "locationMetadata": {
+    "platform": {
+     "planned": "B",
+     "forecast": "B"
+    },
+    "numberOfVehicles": 9,
+    "allocationIndex": 0
+   },
+   "scheduleMetadata": {
+    "uniqueIdentity": "gb-nr:C36869:2026-07-27",
+    "namespace": "gb-nr",
+    "identity": "C36869",
+    "departureDate": "2026-07-27",
+    "operator": {
+     "code": "XR",
+     "name": "Elizabeth Line"
+    },
+    "modeType": "TRAIN",
+    "inPassengerService": true
+   },
+   "origin": [
+    {
+     "location": {
+      "description": "Abbey Wood",
+      "longCodes": [
+       "ABWDXR"
+      ]
+     },
+     "temporalData": {
+      "scheduleInternal": "2026-07-27T17:41:00",
+      "scheduleAdvertised": "2026-07-27T17:41:00"
+     }
+    }
+   ],
+   "destination": [
+    {
+     "location": {
+      "description": "Heathrow Airport Terminal 4",
+      "longCodes": [
+       "HTRWTM4"
+      ]
+     },
+     "temporalData": {
+      "scheduleInternal": "2026-07-27T18:42:00",
+      "scheduleAdvertised": "2026-07-27T18:44:00"
+     }
+    }
+   ]
+  },
+  {
+   "temporalData": {
+    "arrival": {
+     "scheduleInternal": "2026-07-27T17:36:00",
+     "scheduleAdvertised": "2026-07-27T17:36:00",
+     "realtimeForecast": "2026-07-27T17:36:00",
+     "isCancelled": false
+    },
+    "departure": {
+     "scheduleInternal": "2026-07-27T17:36:00",
+     "scheduleAdvertised": "2026-07-27T17:36:00",
+     "realtimeForecast": "2026-07-27T17:36:00",
+     "isCancelled": false
+    },
+    "scheduledCallType": "ADVERTISED_OPEN",
+    "realtimeCallType": "ADVERTISED_OPEN",
+    "displayAs": "CALL",
+    "isInterpolated": false
+   },
+   "locationMetadata": {
+    "numberOfVehicles": 9,
+    "allocationIndex": 0
+   },
+   "scheduleMetadata": {
+    "uniqueIdentity": "gb-nr:C37663:2026-07-27",
+    "namespace": "gb-nr",
+    "identity": "GHOST1",
+    "departureDate": "2026-07-27",
+    "operator": {
+     "code": "XR",
+     "name": "Elizabeth Line"
+    },
+    "modeType": "TRAIN",
+    "inPassengerService": true
+   },
+   "origin": [
+    {
+     "location": {
+      "description": "London Paddington",
+      "longCodes": [
+       "PADTLL"
+      ]
+     },
+     "temporalData": {
+      "scheduleInternal": "2026-07-27T17:16:00",
+      "scheduleAdvertised": "2026-07-27T17:16:00"
+     }
+    }
+   ],
+   "destination": [
+    {
+     "location": {
+      "description": "Abbey Wood",
+      "longCodes": [
+       "ABWDXR"
+      ]
+     },
+     "temporalData": {
+      "scheduleInternal": "2026-07-27T17:44:00",
+      "scheduleAdvertised": "2026-07-27T17:46:00"
+     }
+    }
+   ]
+  }
+ ]
+}

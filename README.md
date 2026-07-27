@@ -94,6 +94,18 @@ python spotify_matrix.py --rows 32 --cols 32 --preview-commute /tmp/commute
 python spotify_matrix.py --self-test
 ```
 
+### Morning commute screen
+
+On weekday mornings (06:30-09:30 by default) the panel shows when to leave for an Elizabeth line train from Custom House platform B, instead of the idle clock. One large number counts down to when you need to walk out of the door - not when the train goes - so `--walk-minutes` (default 15) has to be right. Trains leaving sooner than you can walk there are skipped, not counted down to. If the next train is delayed or cancelled it switches to a three-service timeline with `DLY`/`CAN`, and if the data goes stale the whole frame dims and the countdown freezes rather than ticking down from numbers it no longer trusts.
+
+While music is playing it alternates: 20s of record, 8s of trains. Outside the window nothing changes.
+
+Needs a next-generation Realtime Trains token in `.env` as `RTT_TOKEN`, from [api-portal.rtt.io](https://api-portal.rtt.io). Without one the commute screen simply stays off. Check it works end to end with:
+
+```bash
+python spotify_matrix.py --rows 32 --cols 32 --mock-output /tmp/f.png --commute-once
+```
+
 ### Status LED
 
 When nothing is playing, a single pixel in the panel's top-right corner reports why the display is quiet: **red, pulsing once a second** means the network is unreachable, and **blue, slowly breathing** means Spotify is rate-limiting us and the app is waiting out the ban. Nothing lights when all is well, and the LED never appears over album art. `--no-status-dot` turns it off.

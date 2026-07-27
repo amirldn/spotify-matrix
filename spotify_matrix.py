@@ -17,7 +17,7 @@ import urllib.request
 from email.message import Message
 from urllib.error import HTTPError
 import webbrowser
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
@@ -73,6 +73,17 @@ class SharedPlaybackState:
     # How the poll thread is faring, for the idle status dot: one of
     # STATUS_OK / STATUS_OFFLINE / STATUS_RATE_LIMITED.
     status: str = STATUS_OK
+
+
+@dataclass
+class SharedCommuteState:
+    """What the commute poll thread hands to the renderer."""
+
+    departures: list = field(default_factory=list)
+    # Monotonic time of the last successful fetch. The renderer needs this to
+    # decide the data has gone stale, and it must be None until the very first
+    # success so a cold start never renders a countdown from nothing.
+    fetched_at: float | None = None
 
 
 @dataclass
@@ -685,6 +696,11 @@ COMMUTE_STALE_FACTOR = 0.35
 # Minutes from the front door to the platform. This is the number the hero
 # screen subtracts, so an error here is an error in every countdown it shows.
 DEFAULT_WALK_MINUTES = 15
+
+# A recorded live RTT response, so the parser is checkable with no token and
+# no network. Real data from Custom House, both platforms, plus one service
+# with no platform block at all.
+RTT_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "rtt-custom-house.json"
 
 
 def render_commute(
@@ -1514,6 +1530,190 @@ def _check_commute_cancelled_beats_delayed() -> None:
     assert COMMUTE_AMBER not in colours, "cancelled+delayed must not also render as delayed (amber)"
 
 
+@self_test("commute-schedule-window")
+def _check_commute_schedule_window() -> None:
+    schedule = CommuteSchedule(parse_days("mon,tue,wed,thu,fri"), parse_clock("06:30"), parse_clock("09:30"))
+    monday = datetime.datetime(2026, 7, 27, 7, 0)      # a Monday
+    saturday = datetime.datetime(2026, 8, 1, 7, 0)     # a Saturday
+    assert schedule.active_at(monday)
+    assert not schedule.active_at(saturday), "weekend must not show the commute screen"
+    # Boundaries: start is inclusive, end is exclusive.
+    assert schedule.active_at(monday.replace(hour=6, minute=30))
+    assert not schedule.active_at(monday.replace(hour=6, minute=29))
+    assert not schedule.active_at(monday.replace(hour=9, minute=30))
+    assert schedule.active_at(monday.replace(hour=9, minute=29))
+
+
+@self_test("commute-schedule-parsing")
+def _check_commute_schedule_parsing() -> None:
+    assert parse_days("mon,fri") == frozenset({0, 4})
+    assert parse_days("MON, Sun ") == frozenset({0, 6})
+    assert parse_clock("06:30") == datetime.time(6, 30)
+    assert parse_clock("9") == datetime.time(9, 0)
+    try:
+        parse_days("mon,funday")
+    except argparse.ArgumentTypeError as exc:
+        assert "funday" in str(exc)
+    else:
+        raise AssertionError("a bad day name must be rejected, not silently dropped")
+
+
+@self_test("commute-poll-cadence")
+def _check_commute_poll_cadence() -> None:
+    now = SELF_TEST_NOW
+    # Nothing known, or a train far off: the slow cadence is plenty.
+    assert compute_commute_delay([], now) == COMMUTE_POLL_SECONDS
+    assert compute_commute_delay([_departure(30)], now) == COMMUTE_POLL_SECONDS
+    # Close to a departure a stale delay is the difference between catching it
+    # and standing on an empty platform, so tighten up.
+    assert compute_commute_delay([_departure(3)], now) == COMMUTE_HOT_POLL_SECONDS
+    assert compute_commute_delay([_departure(30), _departure(2)], now) == COMMUTE_HOT_POLL_SECONDS
+
+
+@self_test("commute-cold-start-shows-nothing")
+def _check_commute_cold_start_shows_nothing() -> None:
+    # Before the first successful fetch the screen must fall through to the
+    # normal idle display, never claim the platform is empty.
+    state = SharedCommuteState()
+    assert current_commute_frame(32, state, threading.Lock(), 15, "B") is None
+
+
+@self_test("commute-freezes-when-stale")
+def _check_commute_freezes_when_stale() -> None:
+    # A countdown from stale data keeps ticking and looks authoritative. The
+    # renderer must freeze the clock at the fetch time, not just dim it.
+    state = SharedCommuteState()
+    lock = threading.Lock()
+    state.departures = [sample_departure(datetime.datetime.now(), 40)]
+    state.fetched_at = time.monotonic() - (COMMUTE_STALE_SECONDS + 120)
+    stale_frame = current_commute_frame(32, state, lock, 15, "B")
+    assert stale_frame is not None
+
+    state.fetched_at = time.monotonic()
+    fresh_frame = current_commute_frame(32, state, lock, 15, "B")
+
+    def brightness(frame):
+        return sum(sum(frame.getpixel((x, y))) for y in range(32) for x in range(32))
+
+    assert brightness(stale_frame) < brightness(fresh_frame) * 0.6, "stale frame is not dimmed"
+
+
+@self_test("rtt-parse-fixture")
+def _check_rtt_parse_fixture() -> None:
+    # Parses a recorded live response, so the whole parser is covered with no
+    # token and no network. The fixture is real data from Custom House.
+    payload = json.loads(RTT_FIXTURE.read_text(encoding="utf-8"))
+    departures = trains.parse_departures(payload)
+    assert departures, "fixture parsed to nothing"
+    assert departures == sorted(departures, key=lambda d: d.expected), "not sorted by expected"
+
+    # Every field must be populated from real data, not silently defaulted.
+    first = departures[0]
+    assert first.scheduled and first.expected
+    assert first.destination, "destination did not parse"
+
+    # The fixture carries a service with no platform block at all; it must
+    # survive parsing as "" and then be dropped by on_platform, never assumed
+    # to be ours.
+    unknown = [d for d in departures if d.platform == ""]
+    assert unknown, "fixture lost its no-platform service"
+    assert unknown[0] not in trains.on_platform(departures, "B")
+
+    # Platform B is westbound at Custom House; A is Abbey Wood. Confirmed live.
+    b_dests = " ".join(d.destination for d in trains.on_platform(departures, "B"))
+    assert "Abbey Wood" not in b_dests, f"eastbound service on platform B: {b_dests}"
+
+
+@self_test("rtt-lateness-is-computed")
+def _check_rtt_lateness_is_computed() -> None:
+    # realtimeAdvertisedLateness is null until a train has actually run, so for
+    # upcoming departures it is always absent. Lateness must come from
+    # realtimeForecast - scheduleAdvertised or nothing is ever delayed.
+    payload = {
+        "services": [
+            {
+                "temporalData": {
+                    "departure": {
+                        "scheduleAdvertised": "2026-07-27T07:30:00",
+                        "realtimeForecast": "2026-07-27T07:36:00",
+                    }
+                },
+                "locationMetadata": {"platform": {"planned": "B"}},
+                "destination": [{"location": {"description": "Reading"}}],
+            }
+        ]
+    }
+    parsed = trains.parse_departures(payload)[0]
+    assert parsed.lateness == 6, parsed.lateness
+    assert parsed.delayed
+    assert parsed.expected.hour == 7 and parsed.expected.minute == 36
+
+
+@self_test("rtt-platform-fallback")
+def _check_rtt_platform_fallback() -> None:
+    # actual never appeared in a live response; forecast is what signals a
+    # platform change, so stopping at planned would silently ignore one.
+    def one(platform):
+        return {
+            "services": [
+                {
+                    "temporalData": {"departure": {"scheduleAdvertised": "2026-07-27T07:30:00"}},
+                    "locationMetadata": {"platform": platform},
+                    "destination": [],
+                }
+            ]
+        }
+
+    assert trains.parse_departures(one({"planned": "A", "forecast": "B"}))[0].platform == "B"
+    assert trains.parse_departures(one({"planned": "A"}))[0].platform == "A"
+    assert trains.parse_departures(one({}))[0].platform == ""
+    assert trains.parse_departures(one({"planned": "A", "forecast": "B", "actual": "C"}))[0].platform == "C"
+
+
+@self_test("rtt-client-backoff")
+def _check_rtt_client_backoff() -> None:
+    # A 429 must record a deadline and return, never sleep: RTT bans can be
+    # long and sleeping here would freeze the poll thread and the display.
+    calls = []
+
+    def fake_http(method, url, **kwargs):
+        calls.append(url)
+        return HttpResponse(429, Message(), b"")
+
+    client = trains.RttClient("refresh-token", fake_http)
+    client._access_token = "cached"
+    client._access_expires_at = time.time() + 600
+
+    started = time.monotonic()
+    assert client.departures("CUS") is None
+    assert time.monotonic() - started < 0.5, "client slept on a 429"
+    assert client.backoff_remaining() > 0
+
+    # While banned it must make no further requests at all.
+    before = len(calls)
+    assert client.departures("CUS") is None
+    assert len(calls) == before, "made a request while rate-limited"
+
+
+@self_test("rtt-client-parses-fixture-over-http")
+def _check_rtt_client_parses_fixture_over_http() -> None:
+    # End to end through the client with the network faked out, proving the
+    # token exchange and the location call are wired to the right endpoints.
+    body = RTT_FIXTURE.read_bytes()
+
+    def fake_http(method, url, *, params=None, headers=None, timeout=None):
+        if url == trains.ACCESS_TOKEN_URL:
+            assert headers["Authorization"] == "Bearer refresh-token"
+            return HttpResponse(200, Message(), json.dumps({"token": "access-abc"}).encode())
+        assert url == trains.LOCATION_URL, url
+        assert params["code"] == "gb-nr:CUS", params
+        assert headers["Authorization"] == "Bearer access-abc"
+        return HttpResponse(200, Message(), body)
+
+    client = trains.RttClient("refresh-token", fake_http)
+    assert client.departures("CUS"), "client returned no departures"
+
+
 @self_test("trains-in-reach")
 def _check_trains_in_reach() -> None:
     walk = 15
@@ -1589,6 +1789,201 @@ def run_self_test(pattern: str | None = None) -> None:
         raise SystemExit(1)
 
 
+# --- Commute polling and scheduling -----------------------------------------
+# Cadence is deliberately slow: a timetable changes far less than playback
+# does. Tightened near a departure, where a minute's error is the difference
+# between catching and missing.
+COMMUTE_POLL_SECONDS = 60.0
+COMMUTE_HOT_POLL_SECONDS = 20.0
+COMMUTE_HOT_WINDOW_MINUTES = 5.0
+COMMUTE_STALE_SECONDS = 180.0
+
+# While music plays inside the window, the panel alternates: the record keeps
+# most of the airtime, the trains get a slice. Behaviour rather than taste, so
+# these stay constants instead of growing the CLI.
+COMMUTE_RECORD_SECONDS = 20.0
+COMMUTE_SHOW_SECONDS = 8.0
+COMMUTE_FADE_SECONDS = 0.6
+
+DAY_NAMES = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+def parse_clock(value: str) -> datetime.time:
+    hours, _, minutes = value.partition(":")
+    return datetime.time(int(hours), int(minutes or 0))
+
+
+def parse_days(value: str) -> frozenset[int]:
+    names = [part.strip().lower() for part in value.split(",") if part.strip()]
+    unknown = [n for n in names if n not in DAY_NAMES]
+    if unknown:
+        raise argparse.ArgumentTypeError(f"unknown day(s): {', '.join(unknown)}")
+    return frozenset(DAY_NAMES.index(n) for n in names)
+
+
+@dataclass
+class CommuteSchedule:
+    """When the commute screen is allowed to take over.
+
+    Uses the Pi's local timezone, consistent with render_clock - if the panel
+    shows the wrong time, this window is wrong by the same amount.
+    """
+
+    days: frozenset[int]
+    start: datetime.time
+    end: datetime.time
+
+    def active_at(self, when: datetime.datetime) -> bool:
+        return when.weekday() in self.days and self.start <= when.time() < self.end
+
+
+def compute_commute_delay(departures: list, now: datetime.datetime) -> float:
+    """Poll slowly, except when a departure is imminent.
+
+    A timetable barely moves, so a minute between fetches is plenty. Inside the
+    last few minutes before a train goes, a stale delay or cancellation is the
+    difference between catching it and standing on an empty platform.
+    """
+    if not departures:
+        return COMMUTE_POLL_SECONDS
+    soonest = min((d.expected - now).total_seconds() for d in departures)
+    if soonest <= COMMUTE_HOT_WINDOW_MINUTES * 60:
+        return COMMUTE_HOT_POLL_SECONDS
+    return COMMUTE_POLL_SECONDS
+
+
+def poll_commute(
+    client: trains.RttClient,
+    state: SharedCommuteState,
+    state_lock: threading.Lock,
+    stop_event: threading.Event,
+    schedule: CommuteSchedule,
+    station: str,
+    platform: str,
+    budget: RequestBudget,
+) -> None:
+    """Keep SharedCommuteState fresh while the commute window is open.
+
+    Dormant outside the window: the screen is not showing trains then, so
+    fetching them would spend quota to no purpose.
+    """
+    last_status: str | None = None
+
+    while not stop_event.is_set():
+        if not schedule.active_at(datetime.datetime.now()):
+            stop_event.wait(COMMUTE_POLL_SECONDS)
+            continue
+
+        backoff = client.backoff_remaining()
+        if backoff > 0:
+            stop_event.wait(min(backoff, COMMUTE_POLL_SECONDS))
+            continue
+
+        wait = budget.wait_seconds()
+        if wait > 0:
+            stop_event.wait(wait)
+            continue
+
+        delay = COMMUTE_POLL_SECONDS
+        try:
+            budget.consume()
+            fetched = client.departures(station)
+            if fetched is not None:
+                # Filter here rather than in the renderer, so exactly one place
+                # knows we only care about one platform. Forgetting this would
+                # let the other platform's trains into the countdown.
+                mine = trains.on_platform(fetched, platform)
+                with state_lock:
+                    state.departures = mine
+                    state.fetched_at = time.monotonic()
+                status = f"{len(mine)} departure(s) on platform {platform}"
+                delay = compute_commute_delay(mine, datetime.datetime.now())
+            else:
+                status = "no fresh departures (rate-limited)"
+
+            if status != last_status:
+                print(f"RTT: {status}", flush=True)
+                last_status = status
+        except Exception as exc:
+            status = f"poll failed: {exc}"
+            if status != last_status:
+                print(f"RTT: {status}", flush=True)
+                last_status = status
+
+        stop_event.wait(delay)
+
+
+def current_commute_frame(
+    size: int,
+    commute_state: SharedCommuteState,
+    commute_lock: threading.Lock,
+    walk_minutes: int,
+    platform: str,
+) -> Image.Image | None:
+    """The commute screen right now, or None if there is nothing to show yet.
+
+    Returns None before the first successful fetch: a cold start must fall
+    through to the normal idle screen rather than claim the platform is empty.
+    """
+    with commute_lock:
+        departures = list(commute_state.departures)
+        fetched_at = commute_state.fetched_at
+
+    if fetched_at is None:
+        return None
+
+    age = time.monotonic() - fetched_at
+    stale = age > COMMUTE_STALE_SECONDS
+    # Freeze the clock at the fetch time when stale, so the countdown stops
+    # advancing instead of confidently ticking down from data we no longer
+    # trust. The dimming makes the fault visible; this makes it honest.
+    now = datetime.datetime.now()
+    if stale:
+        now = now - datetime.timedelta(seconds=age)
+    return render_commute(size, departures, now, walk_minutes, platform, stale=stale)
+
+
+def run_commute_once(args: argparse.Namespace) -> None:
+    """Fetch live departures once and render a single frame.
+
+    The bridge between "the parser works on a fixture" and "the panel shows
+    the right thing": it exercises the real token, the real endpoint and the
+    real screen in one shot, without starting threads or touching Spotify.
+    """
+    load_dotenv()
+    token = os.environ.get("RTT_TOKEN")
+    if not token:
+        raise SystemExit("RTT_TOKEN is not set (put it in .env)")
+
+    client = trains.RttClient(token, http_request)
+    fetched = client.departures(args.station)
+    if fetched is None:
+        raise SystemExit("RTT is rate-limiting us; try again later")
+
+    mine = trains.on_platform(fetched, args.platform)
+    now = datetime.datetime.now()
+    reachable = trains.in_reach(mine, now, args.walk_minutes)
+    print(f"{args.station} platform {args.platform} at {now:%H:%M} "
+          f"(walk {args.walk_minutes} min): {len(fetched)} services, "
+          f"{len(mine)} on platform, {len(reachable)} reachable")
+    for departure in reachable[:5]:
+        flag = "CANCELLED" if departure.cancelled else (
+            f"+{departure.lateness}" if departure.delayed else "on time")
+        print(f"  {departure.scheduled:%H:%M} -> {departure.expected:%H:%M}  {flag:9s}  "
+              f"leave in {trains.minutes_to_leave(departure, now, args.walk_minutes):2d}  "
+              f"{departure.destination}")
+
+    size = min(args.rows, args.cols)
+    frame = render_commute(size, mine, now, args.walk_minutes, args.platform)
+    display = build_display(args)
+    try:
+        display.show(frame)
+        if not args.mock_output:
+            time.sleep(10)
+    finally:
+        display.clear()
+
+
 def build_display(args: argparse.Namespace) -> MatrixDisplay | MockDisplay:
     if args.mock_output:
         return MockDisplay(args.mock_output, args.rotate)
@@ -1611,6 +2006,10 @@ def run(args: argparse.Namespace) -> None:
 
     if args.preview_commute:
         render_commute_previews(args.preview_commute, min(args.rows, args.cols))
+        return
+
+    if args.commute_once:
+        run_commute_once(args)
         return
 
     size = min(args.rows, args.cols)
@@ -1680,6 +2079,34 @@ def run(args: argparse.Namespace) -> None:
     )
     poll_thread.start()
 
+    commute_state = SharedCommuteState()
+    commute_lock = threading.Lock()
+    commute_schedule = CommuteSchedule(args.commute_days, args.commute_start, args.commute_end)
+    commute_thread = None
+    rtt_token = os.environ.get("RTT_TOKEN")
+    if args.no_commute:
+        print("Commute screen disabled (--no-commute)", flush=True)
+    elif not rtt_token:
+        # Not fatal: the panel is a music display first, and the commute screen
+        # is additive. Say so once rather than failing to start.
+        print("Commute screen off: RTT_TOKEN not set in .env", flush=True)
+    else:
+        commute_thread = threading.Thread(
+            target=poll_commute,
+            args=(
+                trains.RttClient(rtt_token, http_request),
+                commute_state,
+                commute_lock,
+                stop_event,
+                commute_schedule,
+                args.station,
+                args.platform,
+                RequestBudget(args.rtt_requests_per_minute),
+            ),
+            daemon=True,
+        )
+        commute_thread.start()
+
     angle = 0.0
     spin_velocity = 0.0  # degrees/sec, eased toward the target speed
     full_speed = 360.0 * (args.rpm / 60.0)
@@ -1692,6 +2119,8 @@ def run(args: argparse.Namespace) -> None:
     last_transition_cls: type | None = None
     idle_since: float | None = None      # monotonic time we went idle (None = playing)
     last_idle_frame = idle               # what the idle screen currently shows (ring or clock)
+    commute_cycle_started = time.monotonic()  # when the current record/commute slice began
+    showing_commute = False              # which half of the alternation we're in
 
     try:
         while True:
@@ -1705,6 +2134,9 @@ def run(args: argparse.Namespace) -> None:
             now = time.monotonic()
             delta = now - last_frame
             last_frame = now
+            commute_active = commute_thread is not None and commute_schedule.active_at(
+                datetime.datetime.now()
+            )
 
             # Start a transition when the shown art changes and we're moving to real
             # album art. This covers idle -> playing (transition in from the ghost
@@ -1752,12 +2184,44 @@ def run(args: argparse.Namespace) -> None:
                 if displayed_image is not None:
                     idle_since = None
                     image = render_record(displayed_image, angle, size)
+                    commute_frame = (
+                        current_commute_frame(size, commute_state, commute_lock,
+                                              args.walk_minutes, args.platform)
+                        if commute_active else None
+                    )
+                    if commute_frame is not None:
+                        # Both matter in the morning, so they share the panel:
+                        # the record keeps most of it, the trains get a slice.
+                        span = COMMUTE_SHOW_SECONDS if showing_commute else COMMUTE_RECORD_SECONDS
+                        if now - commute_cycle_started >= span:
+                            showing_commute = not showing_commute
+                            commute_cycle_started = now
+                        slice_elapsed = now - commute_cycle_started
+                        target, other = (
+                            (commute_frame, image) if showing_commute else (image, commute_frame)
+                        )
+                        # Cross-fade into each slice so the swap reads as
+                        # deliberate rather than as the panel glitching.
+                        fade = min(1.0, slice_elapsed / COMMUTE_FADE_SECONDS)
+                        image = target if fade >= 1.0 else Image.blend(other, target, fade)
+                    else:
+                        showing_commute = False
+                        commute_cycle_started = now
                 else:
                     # Nothing playing: ghost ring, then fade to a dim clock after a while.
                     if idle_since is None:
                         idle_since = now
                     elapsed = now - idle_since
-                    if not args.no_idle_clock and elapsed >= args.idle_clock_seconds:
+                    commute_frame = (
+                        current_commute_frame(size, commute_state, commute_lock,
+                                              args.walk_minutes, args.platform)
+                        if commute_active else None
+                    )
+                    if commute_frame is not None:
+                        # Inside the window the trains are the whole point of
+                        # the screen, so they replace the clock outright.
+                        image = commute_frame
+                    elif not args.no_idle_clock and elapsed >= args.idle_clock_seconds:
                         clock = render_clock(size, datetime.datetime.now())
                         image = Image.blend(idle, clock, min(1.0, elapsed - args.idle_clock_seconds))
                     else:
@@ -1780,6 +2244,8 @@ def run(args: argparse.Namespace) -> None:
     finally:
         stop_event.set()
         poll_thread.join(timeout=1)
+        if commute_thread is not None:
+            commute_thread.join(timeout=1)
         display.clear()
 
 
@@ -1920,6 +2386,29 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mock-output", type=Path, help="Write the current frame PNG instead of using RGB matrix hardware.")
     parser.add_argument("--preview-frames", type=Path, help="Render sample spinning-album-art disk frames and exit.")
     parser.add_argument("--preview-transitions", type=Path, help="Render sample song-change transition filmstrips and GIFs, then exit.")
+    parser.add_argument("--station", default="CUS", help="RTT station CRS code for the commute screen.")
+    parser.add_argument("--platform", default="B", help="Only show departures from this platform.")
+    parser.add_argument(
+        "--walk-minutes",
+        type=int,
+        default=DEFAULT_WALK_MINUTES,
+        help="Minutes from your door to the platform. The countdown subtracts this, "
+        "and trains leaving sooner than this are not offered at all.",
+    )
+    parser.add_argument("--commute-days", type=parse_days, default=parse_days("mon,tue,wed,thu,fri"),
+                        help="Days the commute screen may appear, e.g. mon,tue,wed.")
+    parser.add_argument("--commute-start", type=parse_clock, default=parse_clock("06:30"),
+                        help="Start of the commute window (HH:MM, local time).")
+    parser.add_argument("--commute-end", type=parse_clock, default=parse_clock("09:30"),
+                        help="End of the commute window (HH:MM, local time).")
+    parser.add_argument("--rtt-requests-per-minute", type=positive_float, default=20.0,
+                        help="Hard ceiling on RTT API requests (free tier allows 30/min).")
+    parser.add_argument("--no-commute", action="store_true", help="Never show the commute screen.")
+    parser.add_argument(
+        "--commute-once",
+        action="store_true",
+        help="Fetch live departures once, print them, and render one frame. Needs RTT_TOKEN.",
+    )
     parser.add_argument(
         "--preview-commute",
         type=Path,
