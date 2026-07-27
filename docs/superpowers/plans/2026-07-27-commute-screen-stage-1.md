@@ -289,9 +289,9 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'tinyfont'`.
 #!/usr/bin/env python3
 """Pixel-drawing primitives for the LED matrix: a tiny font and LED digits.
 
-Deliberately knows nothing about Spotify or trains - it just puts pixels on a
-PIL draw surface, so the commute screen, a digital clock and a weather readout
-can all share it.
+Deliberately domain-free - it just puts pixels on a PIL draw surface, so any
+screen in this project can share it without inheriting another screen's
+concerns.
 """
 from __future__ import annotations
 
@@ -472,8 +472,8 @@ Append to `tinyfont.py`:
 
 ```python
 # Seven-segment digits, drawn as rectangles rather than a second bitmap font.
-# Parametric in size, and the shape reads as a departure board, which is
-# exactly the association the commute screen wants.
+# Parametric in size, so one implementation covers any large-digit use without
+# a second font, and the segmented shape stays legible at low pixel counts.
 #
 #   aaa
 #  f   b
