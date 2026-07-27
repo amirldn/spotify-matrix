@@ -24,6 +24,8 @@ from typing import Any
 
 from PIL import Image, ImageChops, ImageDraw, ImageOps
 
+import tinyfont
+
 try:
     from dotenv import load_dotenv
 except ImportError:
@@ -1044,6 +1046,60 @@ def _check_status_dot_rhythm() -> None:
     assert min(status_dot_level(STATUS_RATE_LIMITED, t / 20.0) for t in range(100)) > 0.2
     assert min(status_dot_level(STATUS_OFFLINE, t / 20.0) for t in range(100)) == 0.0
     assert status_dot_level(STATUS_OK, 0.0) == 0.0
+
+
+# Every label any commute screen draws. Checked as a group so a new label
+# cannot silently overflow the panel.
+COMMUTE_LABELS = ("LEAVE IN", "LEAVE", "NOW", "PLAT B", "THEN", "NO", "TRAINS", "DLY", "CAN")
+
+
+@self_test("font-glyph-shape")
+def _check_font_glyph_shape() -> None:
+    for char, glyph in tinyfont.GLYPHS.items():
+        assert len(glyph) == 5, f"{char!r} has {len(glyph)} rows, expected 5"
+        widths = {len(row) for row in glyph}
+        assert len(widths) == 1, f"{char!r} has ragged rows: {widths}"
+        assert set("".join(glyph)) <= {"0", "1"}, f"{char!r} has non-binary pixels"
+        assert 1 <= len(glyph[0]) <= 5, f"{char!r} is {len(glyph[0])}px wide"
+
+
+@self_test("font-metrics")
+def _check_font_metrics() -> None:
+    # Width is glyph data plus one pixel between characters, with no trailing gap.
+    assert tinyfont.text_width("B") == tinyfont.glyph_width("B")
+    assert tinyfont.text_width("BB") == tinyfont.glyph_width("B") * 2 + 1
+    # Every label must fit the narrowest panel we support.
+    for label in COMMUTE_LABELS:
+        assert tinyfont.text_width(label) <= 32, f"{label!r} is {tinyfont.text_width(label)}px"
+
+
+@self_test("font-legibility")
+def _check_font_legibility() -> None:
+    # These pairs were confirmed to collide at 3px while building the mockups:
+    # N read as M, V read as U, W read as U. They must differ as bitmaps.
+    for a, b in (("N", "H"), ("V", "W"), ("O", "0"), ("S", "5")):
+        assert tinyfont.GLYPHS[a] != tinyfont.GLYPHS[b], f"{a} and {b} render identically"
+
+
+@self_test("font-draw")
+def _check_font_draw() -> None:
+    frame = Image.new("RGB", (32, 32), (0, 0, 0))
+    draw = ImageDraw.Draw(frame)
+    end = tinyfont.draw_text(draw, 0, 0, "1", (255, 255, 255))
+    assert end == tinyfont.glyph_width("1") + 1, end
+    # '1' is a single 1px column, 5 tall.
+    lit = [(x, y) for y in range(32) for x in range(32) if frame.getpixel((x, y)) != (0, 0, 0)]
+    assert lit == [(0, 0), (0, 1), (0, 2), (0, 3), (0, 4)], lit
+
+
+@self_test("font-centred")
+def _check_font_centred() -> None:
+    frame = Image.new("RGB", (32, 32), (0, 0, 0))
+    draw = ImageDraw.Draw(frame)
+    tinyfont.draw_text_centred(draw, 0, "1", (255, 255, 255), 32)
+    xs = {x for y in range(32) for x in range(32) if frame.getpixel((x, y)) != (0, 0, 0)}
+    # A 1px glyph in a 32px frame starts at (32 - 1) // 2 = 15.
+    assert xs == {15}, xs
 
 
 def run_self_test(pattern: str | None = None) -> None:
