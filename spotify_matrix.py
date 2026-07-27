@@ -682,6 +682,10 @@ def render_commute_empty(size: int, platform: str) -> Image.Image:
 
 COMMUTE_STALE_FACTOR = 0.35
 
+# Minutes from the front door to the platform. This is the number the hero
+# screen subtracts, so an error here is an error in every countdown it shows.
+DEFAULT_WALK_MINUTES = 15
+
 
 def render_commute(
     size: int,
@@ -697,19 +701,22 @@ def render_commute(
     freezing the clock it passes as `now`, so the countdown stops advancing
     rather than confidently counting down from data we no longer trust.
     """
-    if not departures:
+    # Everything downstream reasons about trains you could still get to. A
+    # train leaving sooner than you can walk there is not an option, and
+    # treating it as one pins the countdown at LEAVE NOW forever.
+    options = trains.in_reach(departures, now, walk_minutes)
+
+    if not options:
         frame = render_commute_empty(size, platform)
-    elif trains.is_disrupted(departures):
-        frame = render_commute_timeline(size, departures, now)
+    elif trains.is_disrupted(options):
+        frame = render_commute_timeline(size, options, now)
     else:
-        options = trains.catchable(departures)
-        if not options:
-            frame = render_commute_empty(size, platform)
-        else:
-            target = options[0]
-            frame = render_commute_hero(
-                size, target, trains.minutes_to_leave(target, now, walk_minutes)
-            )
+        # is_disrupted already guaranteed this one is neither cancelled nor
+        # delayed, so it is the train to count down to.
+        target = options[0]
+        frame = render_commute_hero(
+            size, target, trains.minutes_to_leave(target, now, walk_minutes)
+        )
 
     if stale:
         frame = Image.eval(frame, lambda channel: int(channel * COMMUTE_STALE_FACTOR))
@@ -720,21 +727,27 @@ def render_commute_previews(directory: Path, size: int) -> None:
     """Every commute state as a PNG. No token, no network, no hardware."""
     directory.mkdir(parents=True, exist_ok=True)
     now = datetime.datetime(2026, 7, 27, 7, 30)
+    walk = DEFAULT_WALK_MINUTES
 
     def at(minutes: int, *, cancelled: bool = False, late: int = 0) -> trains.Departure:
         return sample_departure(now, minutes, cancelled=cancelled, late=late)
 
+    # Offsets are relative to the walk time, so the scenes keep their meaning
+    # if that default ever changes: comfortable is walk+8, hurry is walk+3.
     scenes = {
-        "commute-comfortable": ([at(16), at(21), at(28)], False),
-        "commute-hurry": ([at(11), at(18), at(25)], False),
-        "commute-now": ([at(8), at(15), at(22)], False),
-        "commute-delayed": ([at(10, late=6), at(18), at(25)], False),
-        "commute-cancelled": ([at(10, cancelled=True), at(18), at(25)], False),
+        "commute-comfortable": ([at(walk + 8), at(walk + 13), at(walk + 20)], False),
+        "commute-hurry": ([at(walk + 3), at(walk + 10), at(walk + 17)], False),
+        "commute-now": ([at(walk), at(walk + 7), at(walk + 14)], False),
+        "commute-delayed": ([at(walk + 3, late=6), at(walk + 10), at(walk + 17)], False),
+        "commute-cancelled": ([at(walk + 3, cancelled=True), at(walk + 10), at(walk + 17)], False),
         "commute-empty": ([], False),
-        "commute-stale": ([at(16), at(21), at(28)], True),
+        # The subtle one: two trains leave too soon to walk to, so the screen
+        # must count down to the third rather than pinning itself at LEAVE NOW.
+        "commute-unreachable": ([at(2), at(7), at(walk + 8), at(walk + 15)], False),
+        "commute-stale": ([at(walk + 8), at(walk + 13), at(walk + 20)], True),
     }
     for name, (departures, stale) in scenes.items():
-        render_commute(size, departures, now, 8, stale=stale).save(directory / f"{name}.png")
+        render_commute(size, departures, now, walk, stale=stale).save(directory / f"{name}.png")
 
 
 # --- Idle status dot ---------------------------------------------------------
@@ -1480,10 +1493,14 @@ def _check_commute_dispatch() -> None:
 def _check_commute_cancelled_goes_to_timeline() -> None:
     # A cancelled next train must never be counted down to. Showing the
     # timeline is how the rider gets their actual options instead.
-    rows = [_departure(6, cancelled=True), _departure(20)]
-    frame = render_commute(32, rows, SELF_TEST_NOW, 8)
-    # Next one is cancelled, so this is the timeline, not a countdown to a
-    # train that isn't running.
+    #
+    # Both trains sit beyond the walk time on purpose: a cancellation only
+    # matters for a train you could otherwise have reached, so putting the
+    # cancelled one inside the walk time would test the reachability filter
+    # rather than this rule.
+    walk = 8
+    rows = [_departure(walk + 4, cancelled=True), _departure(walk + 12)]
+    frame = render_commute(32, rows, SELF_TEST_NOW, walk)
     assert frame.tobytes() == render_commute_timeline(32, rows, SELF_TEST_NOW).tobytes()
 
 
@@ -1495,6 +1512,38 @@ def _check_commute_cancelled_beats_delayed() -> None:
     colours = {frame.getpixel((x, y)) for y in range(32) for x in range(32)}
     assert COMMUTE_RED in colours, "cancelled+delayed must render as cancelled (red)"
     assert COMMUTE_AMBER not in colours, "cancelled+delayed must not also render as delayed (amber)"
+
+
+@self_test("trains-in-reach")
+def _check_trains_in_reach() -> None:
+    walk = 15
+    early, exact, later = _departure(14), _departure(15), _departure(30)
+    got = trains.in_reach([later, early, exact], SELF_TEST_NOW, walk)
+    # Exactly at the walk time is still reachable; a minute sooner is not.
+    assert got == [exact, later], got
+    # Cancellations survive the filter - the rider still needs to be told the
+    # next train they could have reached is off, not shown the one after it.
+    cancelled = _departure(20, cancelled=True)
+    assert trains.in_reach([cancelled], SELF_TEST_NOW, walk) == [cancelled]
+
+
+@self_test("commute-skips-unreachable")
+def _check_commute_skips_unreachable() -> None:
+    # Found against live data: a train leaving sooner than you can walk there
+    # was still counted down to, clamping to zero and showing LEAVE NOW. On a
+    # service running every few minutes there is always such a train, so the
+    # screen showed LEAVE NOW permanently and never gave a real countdown.
+    walk = 15
+    unreachable, reachable = _departure(2), _departure(walk + 8)
+    frame = render_commute(32, [unreachable, reachable], SELF_TEST_NOW, walk)
+    expected = render_commute_hero(
+        32, reachable, trains.minutes_to_leave(reachable, SELF_TEST_NOW, walk)
+    )
+    assert frame.tobytes() == expected.tobytes(), "counted down to an unreachable train"
+
+    # With nothing reachable, say so rather than showing a countdown of zero.
+    only_unreachable = render_commute(32, [unreachable], SELF_TEST_NOW, walk)
+    assert only_unreachable.tobytes() == render_commute_empty(32, "B").tobytes()
 
 
 @self_test("commute-stale-is-dimmer")

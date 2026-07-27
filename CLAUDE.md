@@ -118,6 +118,24 @@ It is drawn as a single stem with a narrow advance instead.
 **Red means cancelled, never "hurry".** Urgency tops out at amber so red always
 carries exactly one meaning.
 
+**Unreachable trains are not options (`trains.in_reach`).** A train leaving
+sooner than the walk time is filtered out before anything else looks at the
+list. Without this the hero counts down to a train it cannot reach, clamps to
+zero and shows `LEAVE NOW` - and since the Elizabeth line runs every ~5 minutes
+there is always such a train, so at a 15-minute walk it showed `LEAVE NOW`
+permanently and never gave a real countdown. All 29 checks passed while this
+was broken; only live data exposed it. Cancellations deliberately survive the
+filter.
+
+**Walk time is 15 minutes** (`DEFAULT_WALK_MINUTES`) to Custom House. Every
+countdown is wrong by exactly the error in this number, and it also decides
+which trains count as reachable at all.
+
+**RTT credentials:** `RTT_TOKEN` in `.env` is a *refresh* token. Exchange it at
+`GET https://data.rtt.io/api/get_access_token` (Bearer) for a ~1h access token,
+then call `GET /rtt/location?code=gb-nr:CUS`. Verified working against live
+data on 2026-07-27.
+
 ## Spotify polling & rate limits (429 bans)
 
 Spotify rate-limits the Web API per `client_id` over a **rolling 30-second window**. Exact numbers are undocumented (community estimate ~180 req/min in *Development Mode*, stricter in practice), and **bans escalate** — a repeat offender can get a 429 with a multi-hour `Retry-After` (observed once: **27432s ≈ 7.6h**). The ban is server-side on the `client_id`, so **rebooting/restarting does not clear it**.

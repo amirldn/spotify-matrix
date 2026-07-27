@@ -40,8 +40,28 @@ def on_platform(departures: list[Departure], platform: str) -> list[Departure]:
 
 
 def catchable(departures: list[Departure]) -> list[Departure]:
-    """Services that can actually be caught, soonest first."""
+    """Services that are still running, soonest first."""
     return sorted((d for d in departures if not d.cancelled), key=lambda d: d.expected)
+
+
+def in_reach(
+    departures: list[Departure], now: datetime.datetime, walk_minutes: int
+) -> list[Departure]:
+    """Services you could still physically get to, soonest first.
+
+    Distinct from `catchable`, which only drops cancellations: this drops
+    trains leaving sooner than you can walk to the platform. Without it the
+    screen fixates on a train it cannot reach, clamps the countdown to zero and
+    shows LEAVE NOW - and on a line running every few minutes there is always
+    such a train, so it would show LEAVE NOW permanently and never once give a
+    useful countdown. Found against live data; fixtures all happened to place
+    the first train beyond the walk time, so nothing caught it.
+
+    Cancellations are deliberately kept: the caller still needs to see that the
+    next train it could have reached is off.
+    """
+    cutoff = now + datetime.timedelta(minutes=walk_minutes)
+    return sorted((d for d in departures if d.expected >= cutoff), key=lambda d: d.expected)
 
 
 def minutes_to_leave(departure: Departure, now: datetime.datetime, walk_minutes: int) -> int:
