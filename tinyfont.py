@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Pixel-drawing primitives for the LED matrix: a tiny font and LED digits.
 
-Deliberately knows nothing about Spotify or trains - it just puts pixels on a
-PIL draw surface, so the commute screen, a digital clock and a weather readout
-can all share it.
+Domain-agnostic pixel-drawing primitives; just puts pixels on a PIL draw
+surface so any application can share it.
 """
 from __future__ import annotations
 
@@ -25,9 +24,9 @@ GLYPHS: dict[str, list[str]] = {
     # N needs a 4th column for its diagonal, or it reads as M or H.
     "N": ["1001", "1101", "1011", "1001", "1001"],
     "O": ["111", "101", "101", "101", "111"],
-    # "0" is identical to "O": at 3x5, the only distinguishing feature would be
-    # an interior pixel, which reads as an 8. Every time on the commute screen
-    # starts with a 0, and they never appear ambiguously, so save the confusion.
+    # Deliberately identical to "O". At 3x5 the only way to tell them apart is
+    # an interior pixel, which makes the zero read as an 8 - a far worse
+    # confusion than 0/O, which no caller places in an ambiguous position.
     "0": ["111", "101", "101", "101", "111"],
     "P": ["110", "101", "110", "100", "100"],
     "R": ["110", "101", "110", "101", "101"],
@@ -91,8 +90,8 @@ def draw_text_centred(
 
 
 # Seven-segment digits, drawn as rectangles rather than a second bitmap font.
-# Parametric in size, and the shape reads as a departure board, which is
-# exactly the association the commute screen wants.
+# Parametric in size, so one implementation covers any large-digit use without
+# a second font, and the segmented shape stays legible at low pixel counts.
 #
 #   aaa
 #  f   b
